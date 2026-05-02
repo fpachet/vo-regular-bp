@@ -132,6 +132,52 @@ then an order policy such as `LongestFeasiblePolicy` or
 The main result object reports `success_mass`, order-specific start masses,
 samples, and optional order traces.
 
+### Public Constraint Backend
+
+`run_constrained_order_stack(...)` is the library-facing wrapper for order-stack
+generation. It accepts a `ConstraintSet`, compiles positional constraints as
+time masks, compiles regular constraints as acceptors, and then dispatches to
+the appropriate backend.
+
+```python
+from vo_regular_bp import (
+    ConstraintSet,
+    LongestFeasiblePolicy,
+    OrderStackModel,
+    run_constrained_order_stack,
+)
+
+sequence = (60, 64, 67, 72, 76, 67, 71, 72)
+model = OrderStackModel.from_sequences([sequence], max_order=2)
+final_c = {pitch for pitch in sequence if pitch % 12 == 0}
+
+bp = run_constrained_order_stack(
+    model,
+    ConstraintSet(positional={3: final_c}),
+    length=4,
+    prefix=sequence[:2],
+    policy=LongestFeasiblePolicy(),
+)
+
+sample, orders = bp.sample_with_orders(rng=0)
+assert sample[-1] % 12 == 0
+```
+
+`ConstraintSet` supports:
+
+- `positional`: per-time symbol masks or predicates.
+- `forbidden_substrings`: exact forbidden substring / MAXORDER constraints,
+  compiled to a dense DFA when possible.
+- `regular_acceptors`: caller-supplied `DFA` instances.
+- `meter`: a `MeterConstraint` for finite per-symbol meter/class patterns.
+- `cumulative_meter`: a `CumulativeMeterConstraint` for duration/cost
+  accumulation, bar-boundary predicates, final total cost, and optional padding
+  symbols.
+
+The core API is intentionally not Continuator-specific; adapters for other
+projects can map their own event objects to symbols, meter classes, costs, or
+regular acceptors.
+
 ## Brute Force and Metrics
 
 For small examples, the package includes exact enumeration helpers:
