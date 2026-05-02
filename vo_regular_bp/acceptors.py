@@ -70,6 +70,74 @@ class DFA:
         return len(self.states)
 
 
+class DenseForbiddenSubstringDFA(DFA):
+    """Finite-alphabet forbidden-substring DFA with dense integer states.
+
+    States are integer ids for the same proper-prefix states used by
+    :func:`forbidden_substring_acceptor`. A transition value of ``-1`` means
+    rejection. The public methods mirror :class:`DFA`, while
+    ``dense_transition_by_symbol`` gives hot loops a direct table lookup path.
+    """
+
+    rejected_state = -1
+
+    def __init__(
+        self,
+        *,
+        prefixes: Sequence[tuple[Symbol, ...]],
+        alphabet: Iterable[Symbol],
+        transition_table: Sequence[Sequence[int]],
+        name: str = "dense_forbidden_substring",
+    ) -> None:
+        alphabet_tuple = tuple(alphabet)
+        self.start_state = 0
+        self.prefixes = tuple(prefixes)
+        self.states = frozenset(range(len(self.prefixes)))
+        self.accept_states = self.states
+        self.alphabet = frozenset(alphabet_tuple)
+        self.transition_table = tuple(tuple(int(next_state) for next_state in row) for row in transition_table)
+        self.symbol_to_index = {symbol: index for index, symbol in enumerate(alphabet_tuple)}
+        self.dense_transition_by_symbol = {
+            symbol: tuple(row[index] for row in self.transition_table)
+            for symbol, index in self.symbol_to_index.items()
+        }
+        self.name = name
+
+    def next_state(self, state: State, symbol: Symbol) -> State | None:
+        if not isinstance(state, int):
+            raise TypeError("dense forbidden-substring states must be integers")
+        transitions = self.dense_transition_by_symbol.get(symbol)
+        if transitions is None:
+            return None
+        next_state = transitions[state]
+        if next_state == self.rejected_state:
+            return None
+        return next_state
+
+    def is_accepting(self, state: State) -> bool:
+        return isinstance(state, int) and 0 <= state < len(self.prefixes)
+
+    def accepts(self, sequence: Sequence[Symbol]) -> bool:
+        state = self.start_state
+        for symbol in sequence:
+            next_state = self.next_state(state, symbol)
+            if next_state is None:
+                return False
+            state = next_state
+        return self.is_accepting(state)
+
+    def state_count(self) -> int:
+        return len(self.prefixes)
+
+    def edge_count(self) -> int:
+        return sum(
+            1
+            for row in self.transition_table
+            for next_state in row
+            if next_state != self.rejected_state
+        )
+
+
 def true_acceptor(*, name: str = "true") -> DFA:
     """Accept every finite sequence over any alphabet."""
 
@@ -223,6 +291,108 @@ def meter_acceptor(
     )
 
 
+def cumulative_meter_acceptor(
+    length: int,
+    cost: Mapping[Symbol, int] | Callable[[Symbol], int],
+    predicate: Callable[[int, Symbol, int], bool] | None = None,
+    *,
+    alphabet: Iterable[Symbol] | None = None,
+    max_cost: int | None = None,
+    accept_costs: Iterable[int] | Callable[[int], bool] | None = None,
+    end_symbol: Symbol | None = None,
+    name: str = "cumulative_meter",
+) -> DFA:
+    """Accept strings satisfying a cumulative meter predicate.
+
+    This is the regular-constraint form of the paper-style meter predicate
+    ``pi(c, x, k)``: before emitting symbol ``x`` at 1-based position ``k``,
+    the DFA state stores the cumulative cost ``c`` of previous symbols. The
+    transition is accepted iff ``predicate(c, x, k)`` holds, then the symbol
+    cost is added to the state.
+
+    ``accept_costs`` can be used for final total-cost requirements. If
+    ``end_symbol`` is provided, once it appears, all later symbols must be the
+    same padding symbol. Passing ``max_cost`` bounds transitions and lets the
+    DFA expose an explicit finite state set.
+    """
+
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    if max_cost is not None and max_cost < 0:
+        raise ValueError("max_cost must be non-negative")
+
+    if callable(cost):
+        cost_of = cost
+    else:
+        cost_map = dict(cost)
+
+        def cost_of(symbol: Symbol) -> int:
+            return cost_map[symbol]
+
+    if accept_costs is None:
+        accepts_cost = lambda total: True
+    elif callable(accept_costs):
+        accepts_cost = accept_costs
+    else:
+        accepted_totals = frozenset(int(total) for total in accept_costs)
+        accepts_cost = lambda total: total in accepted_totals
+
+    def transition(state: State, symbol: Symbol) -> State | None:
+        if not (
+            isinstance(state, tuple)
+            and len(state) == 3
+            and isinstance(state[0], int)
+            and isinstance(state[1], int)
+            and isinstance(state[2], bool)
+        ):
+            raise TypeError("cumulative-meter states must be (position, total_cost, ended)")
+
+        position, total_cost, ended = state
+        if position >= length:
+            return None
+        if ended and symbol != end_symbol:
+            return None
+
+        symbol_cost = _nonnegative_int_cost(cost_of(symbol), symbol)
+        next_position = position + 1
+        next_total = total_cost + symbol_cost
+        if max_cost is not None and next_total > max_cost:
+            return None
+        if predicate is not None and not predicate(total_cost, symbol, next_position):
+            return None
+
+        next_ended = ended or (end_symbol is not None and symbol == end_symbol)
+        return (next_position, next_total, next_ended)
+
+    def accepting(state: State) -> bool:
+        return (
+            isinstance(state, tuple)
+            and len(state) == 3
+            and state[0] == length
+            and isinstance(state[1], int)
+            and bool(accepts_cost(state[1]))
+        )
+
+    states = None
+    if max_cost is not None:
+        ended_values = (False, True) if end_symbol is not None else (False,)
+        states = {
+            (position, total, ended)
+            for position in range(length + 1)
+            for total in range(max_cost + 1)
+            for ended in ended_values
+        }
+
+    return DFA(
+        start_state=(0, 0, False),
+        states=states,
+        alphabet=alphabet,
+        transition_func=transition,
+        accept_func=accepting,
+        name=name,
+    )
+
+
 def forbidden_substring_acceptor(
     forbidden_patterns: Iterable[Sequence[Symbol]],
     *,
@@ -304,6 +474,74 @@ def forbidden_substring_acceptor(
     )
 
 
+def dense_forbidden_substring_acceptor(
+    forbidden_patterns: Iterable[Sequence[Symbol]],
+    *,
+    alphabet: Iterable[Symbol],
+    name: str = "dense_forbidden_substring",
+) -> DenseForbiddenSubstringDFA:
+    """Dense finite-alphabet acceptor for strings with no forbidden substring."""
+
+    patterns = tuple(tuple(pattern) for pattern in forbidden_patterns)
+    if any(len(pattern) == 0 for pattern in patterns):
+        raise ValueError("empty forbidden patterns would reject every sequence")
+
+    alphabet_tuple = tuple(alphabet)
+    prefix_to_id: dict[tuple[Symbol, ...], int] = {(): 0}
+    prefixes: list[tuple[Symbol, ...]] = [()]
+    for pattern in patterns:
+        for prefix_len in range(1, len(pattern)):
+            prefix = pattern[:prefix_len]
+            if prefix not in prefix_to_id:
+                prefix_to_id[prefix] = len(prefixes)
+                prefixes.append(prefix)
+
+    max_prefix_len = max((len(prefix) for prefix in prefixes), default=0)
+    patterns_by_len: dict[int, set[tuple[Symbol, ...]]] = {}
+    for pattern in patterns:
+        patterns_by_len.setdefault(len(pattern), set()).add(pattern)
+
+    if len(patterns_by_len) == 1:
+        forbidden_len, forbidden_set = next(iter(patterns_by_len.items()))
+
+        def completes_forbidden(candidate: tuple[Symbol, ...]) -> bool:
+            return len(candidate) >= forbidden_len and candidate[-forbidden_len:] in forbidden_set
+
+    else:
+
+        def completes_forbidden(candidate: tuple[Symbol, ...]) -> bool:
+            return any(
+                len(candidate) >= pattern_len and candidate[-pattern_len:] in pattern_set
+                for pattern_len, pattern_set in patterns_by_len.items()
+            )
+
+    def next_prefix(state: tuple[Symbol, ...], symbol: Symbol) -> tuple[Symbol, ...] | None:
+        candidate = state + (symbol,)
+        if completes_forbidden(candidate):
+            return None
+        limit = min(len(candidate), max_prefix_len)
+        for size in range(limit, -1, -1):
+            suffix = candidate[-size:] if size else ()
+            if suffix in prefix_to_id:
+                return suffix
+        return ()
+
+    transition_table: list[list[int]] = []
+    for prefix in prefixes:
+        row: list[int] = []
+        for symbol in alphabet_tuple:
+            next_state = next_prefix(prefix, symbol)
+            row.append(DenseForbiddenSubstringDFA.rejected_state if next_state is None else prefix_to_id[next_state])
+        transition_table.append(row)
+
+    return DenseForbiddenSubstringDFA(
+        prefixes=prefixes,
+        alphabet=alphabet_tuple,
+        transition_table=transition_table,
+        name=name,
+    )
+
+
 def max_order_acceptor(
     reference_sequences: Iterable[Sequence[Symbol]],
     max_order: int,
@@ -328,3 +566,11 @@ def max_order_acceptor(
         for index in range(0, len(tokens) - window + 1):
             forbidden.add(tokens[index : index + window])
     return forbidden_substring_acceptor(forbidden, alphabet=alphabet, name=name)
+
+
+def _nonnegative_int_cost(value: int, symbol: Symbol) -> int:
+    if not isinstance(value, int):
+        raise TypeError(f"cost for symbol {symbol!r} must be an integer")
+    if value < 0:
+        raise ValueError(f"cost for symbol {symbol!r} must be non-negative")
+    return value
