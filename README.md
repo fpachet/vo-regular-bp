@@ -22,6 +22,10 @@ python -m pip install -e .
 python -m pytest -q
 ```
 
+Library-oriented integration notes are in
+[`docs/library_usage.md`](docs/library_usage.md). The paper evaluation scripts
+are kept separately under [`paper/variable_order_regular_bp/`](paper/variable_order_regular_bp/).
+
 ## Quick Start
 
 ```python
@@ -189,6 +193,10 @@ internal BP result object.
 The core API is intentionally not Continuator-specific; adapters for other
 projects can map their own event objects to symbols, meter classes, costs, or
 regular acceptors.
+
+All high-level constraints are over the generated suffix. Positional indices are
+zero-based within the generated sequence, not within the training corpus and not
+within `prefix + generated`.
 
 ### Constraint Builders
 

@@ -12,6 +12,29 @@ authors = [
   { name = "Francois Pachet" }
 ]
 dependencies = []
+keywords = [
+  "constrained-sampling",
+  "variable-order-markov",
+  "belief-propagation",
+  "regular-constraints",
+  "music-generation",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Repository = "https://github.com/fpachet/vo-regular-bp"
 
 [tool.setuptools.packages.find]
 include = ["vo_regular_bp*"]

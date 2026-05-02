@@ -1,4 +1,12 @@
-"""Exact constrained sampling for sparse variable-order context models."""
+"""Exact constrained sampling for sparse variable-order context models.
+
+The top-level package exports the stable library surface: generic product BP,
+Continuator-style order-stack backends, event adapters, constraint builders, and
+diagnostic helpers.  Lower-level modules remain importable for experiments, but
+external projects should prefer the names exported here.
+"""
+
+__version__ = "0.1.0"
 
 from .acceptors import (
     DFA,
@@ -55,7 +63,7 @@ from .constraints import (
     MeterConstraint,
     compile_constraints,
 )
-from .context import ContextGraph, Edge
+from .context import Context, ContextGraph, Edge, Symbol
 from .metrics import empirical_distribution, total_variation
 from .order_stack_bp import (
     LongestFeasiblePolicy,
@@ -71,63 +79,72 @@ from .positional_bp import LazyBackoffContextModel, PositionalBPResult, run_posi
 from .product_bp import ProductBPResult, run_bp, sample_exact
 
 __all__ = [
+    "__version__",
+    # Core symbolic graph and DFA API.
+    "Context",
     "ContextGraph",
-    "BackendDiagnostics",
-    "CompiledConstraints",
-    "ConstrainedOrderStackBackend",
-    "ConstraintSet",
-    "CumulativeMeterConstraint",
     "DFA",
     "DenseForbiddenSubstringDFA",
     "Edge",
+    "Symbol",
+    "all_of",
+    "cumulative_meter_acceptor",
+    "dense_forbidden_substring_acceptor",
+    "forbidden_substring_acceptor",
+    "max_order_acceptor",
+    "meter_acceptor",
+    "positional_acceptor",
+    "true_acceptor",
+    # General exact product BP.
+    "LazyBackoffContextModel",
+    "PositionalBPResult",
+    "ProductBPResult",
+    "run_bp",
+    "run_positional_bp",
+    "sample_exact",
+    # Library-facing order-stack backend.
+    "BackendDiagnostics",
+    "ConstrainedOrderStackBackend",
+    "GeneratedSequence",
+    "LongestFeasiblePolicy",
+    "OrderStackBPResult",
+    "OrderStackModel",
+    "RegularOrderStackBPResult",
+    "SingletonAvoidingBackoffPolicy",
+    "prepare_constrained_order_stack",
+    "prepare_constrained_order_stack_from_sequences",
+    "run_constrained_order_stack",
+    "run_order_stack_bp",
+    "run_order_stack_dfa_bp",
+    "run_order_stack_masked_dfa_bp",
+    # Constraint specifications and builders.
+    "CompiledConstraints",
+    "ConstraintSet",
+    "CumulativeMeterConstraint",
+    "MeterConstraint",
+    "at_position",
+    "avoid_copied_ngrams",
+    "combine_constraints",
+    "compile_constraints",
+    "cumulative_meter",
+    "final_pitch_class",
+    "final_symbol",
+    "final_symbols",
+    "meter_pattern",
+    # Event and Continuator-style adapters.
     "EventCodec",
     "EventOrderStackBackend",
     "GeneratedEvents",
-    "GeneratedSequence",
-    "LazyBackoffContextModel",
-    "LongestFeasiblePolicy",
-    "MeterConstraint",
-    "OrderStackBPResult",
-    "OrderStackModel",
-    "PositionalBPResult",
-    "ProductBPResult",
-    "RegularOrderStackBPResult",
-    "SingletonAvoidingBackoffPolicy",
-    "all_of",
-    "at_position",
-    "avoid_copied_ngrams",
+    "duration_total_constraint",
+    "final_pitch_class_constraint",
+    "infer_symbol_to_event",
+    "meter_cycle_constraint",
+    "prepare_constrained_order_stack_from_events",
+    "prepare_continuation_backend",
+    # Analysis/test helpers that are useful for exactness checks.
     "brute_force_distribution",
     "brute_force_partition_function",
-    "combine_constraints",
     "conditional_distribution",
-    "compile_constraints",
-    "cumulative_meter",
-    "cumulative_meter_acceptor",
     "empirical_distribution",
-    "dense_forbidden_substring_acceptor",
-    "duration_total_constraint",
-    "final_pitch_class",
-    "final_pitch_class_constraint",
-    "final_symbol",
-    "final_symbols",
-    "forbidden_substring_acceptor",
-    "infer_symbol_to_event",
-    "max_order_acceptor",
-    "meter_acceptor",
-    "meter_cycle_constraint",
-    "meter_pattern",
-    "positional_acceptor",
-    "prepare_constrained_order_stack",
-    "prepare_constrained_order_stack_from_events",
-    "prepare_constrained_order_stack_from_sequences",
-    "prepare_continuation_backend",
-    "run_constrained_order_stack",
-    "run_order_stack_dfa_bp",
-    "run_order_stack_masked_dfa_bp",
-    "run_order_stack_bp",
-    "run_positional_bp",
-    "run_bp",
-    "sample_exact",
     "total_variation",
-    "true_acceptor",
 ]
