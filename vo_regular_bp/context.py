@@ -158,17 +158,36 @@ class ContextGraph:
         if max_order < 0:
             raise ValueError("max_order must be non-negative")
 
-        counts: dict[Context, Counter[Symbol]] = defaultdict(Counter)
-        observed_contexts: set[Context] = {(), _as_context(start_state)}
+        return cls.from_weighted_sequences(
+            ((1.0, sequence) for sequence in sequences),
+            max_order=max_order,
+            start_state=start_state,
+        )
 
-        for sequence in sequences:
+    @classmethod
+    def from_weighted_sequences(
+        cls,
+        weighted_sequences: Iterable[tuple[int | float, Sequence[Symbol]]],
+        *,
+        max_order: int,
+        start_state: Iterable[Symbol] | Context = (),
+    ) -> "ContextGraph":
+        """Estimate continuation counts from a weighted sequence multiset."""
+
+        if max_order < 0:
+            raise ValueError("max_order must be non-negative")
+
+        counts: dict[Context, Counter[Symbol]] = defaultdict(Counter)
+
+        for weight, sequence in weighted_sequences:
+            if weight <= 0:
+                continue
             tokens = tuple(sequence)
             for index, symbol in enumerate(tokens):
                 order_limit = min(max_order, index)
                 for order in range(order_limit + 1):
                     context = tokens[index - order : index] if order else ()
-                    counts[context][symbol] += 1
-                    observed_contexts.add(context)
+                    counts[context][symbol] += weight
 
         return cls.from_counts(counts, max_order=max_order, start_state=start_state)
 

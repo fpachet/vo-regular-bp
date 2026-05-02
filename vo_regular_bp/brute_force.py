@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from itertools import product
 from typing import Hashable, Iterable, Mapping
 
 from .acceptors import DFA
@@ -14,6 +15,7 @@ def brute_force_distribution(
     acceptor: DFA,
     *,
     length: int,
+    alphabet: Iterable[Symbol] | None = None,
     start_context: Iterable[Symbol] | Context | None = None,
     start_acceptor_state: Hashable | None = None,
 ) -> dict[tuple[Symbol, ...], float]:
@@ -25,6 +27,22 @@ def brute_force_distribution(
     context0 = graph.start_state if start_context is None else _as_context(start_context)
     acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
     masses: dict[tuple[Symbol, ...], float] = defaultdict(float)
+
+    if alphabet is not None:
+        for sequence in product(tuple(alphabet), repeat=length):
+            state = acceptor0
+            accepted = True
+            for symbol in sequence:
+                state = acceptor.next_state(state, symbol)
+                if state is None:
+                    accepted = False
+                    break
+            if not accepted or not acceptor.is_accepting(state):
+                continue
+            probability = graph.probability(sequence, start_state=context0)
+            if probability > 0.0:
+                masses[sequence] += probability
+        return dict(masses)
 
     def visit(
         time: int,
@@ -59,6 +77,7 @@ def brute_force_partition_function(
     acceptor: DFA,
     *,
     length: int,
+    alphabet: Iterable[Symbol] | None = None,
     start_context: Iterable[Symbol] | Context | None = None,
     start_acceptor_state: Hashable | None = None,
 ) -> float:
@@ -67,6 +86,7 @@ def brute_force_partition_function(
             graph,
             acceptor,
             length=length,
+            alphabet=alphabet,
             start_context=start_context,
             start_acceptor_state=start_acceptor_state,
         ).values()

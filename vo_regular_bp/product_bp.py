@@ -7,7 +7,7 @@ import random
 from typing import Hashable, Iterable, Sequence
 
 from .acceptors import DFA
-from .context import Context, ContextGraph, Edge, Symbol, _as_context
+from .context import Context, ContextGraph, Symbol, _as_context
 
 ProductState = tuple[Context, Hashable]
 
@@ -91,6 +91,37 @@ class ProductBPResult:
     def sample_many(self, count: int, *, rng: random.Random | int | None = None) -> list[tuple[Symbol, ...]]:
         generator = _coerce_rng(rng)
         return [self.sample(rng=generator) for _ in range(count)]
+
+    def conditional_probability(self, sequence: Sequence[Symbol]) -> float:
+        """Probability of ``sequence`` under the constrained BP distribution."""
+
+        if len(sequence) != self.length:
+            raise ValueError("sequence length must match the BP horizon")
+        if self.partition_function <= 0.0:
+            return 0.0
+
+        state = self.start_state
+        probability = 1.0
+        for time, symbol in enumerate(sequence):
+            beta_now = self.betas[time].get(state, 0.0)
+            if beta_now <= 0.0:
+                return 0.0
+            edge = next(
+                (
+                    edge
+                    for edge in self.edges[time].get(state, ())
+                    if edge.symbol == symbol
+                ),
+                None,
+            )
+            if edge is None:
+                return 0.0
+            weight = edge.probability * self.betas[time + 1].get(edge.next_state, 0.0)
+            if weight <= 0.0:
+                return 0.0
+            probability *= weight / beta_now
+            state = edge.next_state
+        return probability
 
 
 def run_bp(
