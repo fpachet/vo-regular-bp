@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vo-regular-bp"
+version = "0.1.0"
+description = "Exact constrained sampling from sparse variable-order context models under regular constraints."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Francois Pachet" }
+]
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["vo_regular_bp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
