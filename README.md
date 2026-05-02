@@ -190,6 +190,76 @@ The core API is intentionally not Continuator-specific; adapters for other
 projects can map their own event objects to symbols, meter classes, costs, or
 regular acceptors.
 
+### Constraint Builders
+
+Common constraints can be built and combined without manually constructing
+`ConstraintSet` objects:
+
+```python
+from vo_regular_bp import (
+    combine_constraints,
+    final_pitch_class,
+    avoid_copied_ngrams,
+)
+
+constraints = combine_constraints(
+    final_pitch_class(0, length=32),
+    avoid_copied_ngrams(reference_pitches, 5),
+)
+```
+
+Builder helpers include:
+
+- `at_position(...)`
+- `final_symbol(...)` and `final_symbols(...)`
+- `final_pitch_class(...)`
+- `avoid_copied_ngrams(...)`
+- `meter_pattern(...)`
+- `cumulative_meter(...)`
+- `combine_constraints(...)`
+
+### Event Adapters
+
+External projects can keep rich event objects at their boundary and encode them
+as hashable symbols for the backend:
+
+```python
+from dataclasses import dataclass
+from vo_regular_bp import (
+    EventCodec,
+    combine_constraints,
+    final_pitch_class,
+    prepare_constrained_order_stack_from_events,
+)
+
+@dataclass(frozen=True)
+class Note:
+    pitch: int
+    duration: int
+
+codec = EventCodec(
+    event_to_symbol=lambda note: (note.pitch, note.duration),
+    symbol_to_event=lambda symbol: Note(symbol[0], symbol[1]),
+)
+
+backend = prepare_constrained_order_stack_from_events(
+    [training_notes],
+    combine_constraints(
+        final_pitch_class(0, length=8, symbol_to_pitch=lambda symbol: symbol[0]),
+    ),
+    codec=codec,
+    max_order=3,
+    length=8,
+    prefix=prefix_notes,
+)
+
+generated = backend.sample_events_with_orders(rng=0)
+print(generated.events)
+print(generated.orders)
+```
+
+See `examples/event_order_stack_backend.py` for a complete small example.
+
 ## Brute Force and Metrics
 
 For small examples, the package includes exact enumeration helpers:
