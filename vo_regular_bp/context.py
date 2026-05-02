@@ -18,6 +18,7 @@ class Edge:
     symbol: Symbol
     probability: float
     next_state: Context
+    order_weights: tuple[tuple[int, float], ...] = ()
 
 
 def _as_context(value: Iterable[Symbol] | Context | None) -> Context:
@@ -52,7 +53,12 @@ class ContextGraph:
         for raw_state, raw_edges in edges_by_state.items():
             state = _as_context(raw_state)
             edges = tuple(
-                Edge(edge.symbol, float(edge.probability), _as_context(edge.next_state))
+                Edge(
+                    edge.symbol,
+                    float(edge.probability),
+                    _as_context(edge.next_state),
+                    tuple((int(order), float(weight)) for order, weight in edge.order_weights),
+                )
                 for edge in raw_edges
             )
             normalized[state] = edges
@@ -191,6 +197,87 @@ class ContextGraph:
 
         return cls.from_counts(counts, max_order=max_order, start_state=start_state)
 
+    @classmethod
+    def from_backoff_sequences(
+        cls,
+        sequences: Iterable[Sequence[Symbol]],
+        *,
+        max_order: int,
+        backoff_weight: float = 0.25,
+        start_state: Iterable[Symbol] | Context = (),
+    ) -> "ContextGraph":
+        """Build a sparse graph with explicit lower-order backoff support.
+
+        Each context receives a weighted mixture of normalized continuation
+        distributions from itself and its suffixes. This is useful for exact
+        experiments where a strict longest-context MLE model would make every
+        ``K+1``-gram transition copied from training by construction.
+        """
+
+        if max_order < 0:
+            raise ValueError("max_order must be non-negative")
+        if not 0.0 <= backoff_weight <= 1.0:
+            raise ValueError("backoff_weight must be in [0, 1]")
+
+        counts: dict[Context, Counter[Symbol]] = defaultdict(Counter)
+        for sequence in sequences:
+            tokens = tuple(sequence)
+            for index, symbol in enumerate(tokens):
+                order_limit = min(max_order, index)
+                for order in range(order_limit + 1):
+                    context = tokens[index - order : index] if order else ()
+                    counts[context][symbol] += 1
+
+        contexts = set(counts)
+        contexts.add(_as_context(start_state))
+        edges_by_state: dict[Context, list[Edge]] = {}
+
+        for context in contexts:
+            scores: Counter[Symbol] = Counter()
+            order_scores: dict[Symbol, Counter[int]] = defaultdict(Counter)
+            context_order = len(context)
+            for order in range(context_order, -1, -1):
+                suffix = context[-order:] if order else ()
+                if suffix not in counts:
+                    continue
+                total = float(sum(counts[suffix].values()))
+                if total <= 0.0:
+                    continue
+                weight = backoff_weight ** (context_order - order)
+                for symbol, count in counts[suffix].items():
+                    contribution = weight * (float(count) / total)
+                    scores[symbol] += contribution
+                    order_scores[symbol][order] += contribution
+
+            total_score = float(sum(scores.values()))
+            if total_score <= 0.0:
+                continue
+            edges_by_state[context] = [
+                Edge(
+                    symbol,
+                    score / total_score,
+                    cls._canon(context, symbol, contexts, max_order),
+                    tuple(
+                        sorted(
+                            (
+                                (order, contribution / score)
+                                for order, contribution in order_scores[symbol].items()
+                            ),
+                            reverse=True,
+                        )
+                    ),
+                )
+                for symbol, score in scores.items()
+                if score > 0.0
+            ]
+
+        return cls(
+            edges_by_state,
+            start_state=start_state,
+            max_order=max_order,
+            validate=True,
+        )
+
     @staticmethod
     def _canon(
         context: Context,
@@ -249,6 +336,15 @@ class ContextGraph:
                     raise ValueError(f"edge from {state!r} points to unknown state {edge.next_state!r}")
                 if not math.isfinite(edge.probability) or edge.probability < 0.0:
                     raise ValueError(f"invalid probability {edge.probability!r} on edge {edge!r}")
+                order_total = 0.0
+                for order, weight in edge.order_weights:
+                    if order < 0:
+                        raise ValueError(f"invalid negative order {order!r} on edge {edge!r}")
+                    if not math.isfinite(weight) or weight < 0.0:
+                        raise ValueError(f"invalid order weight {weight!r} on edge {edge!r}")
+                    order_total += weight
+                if edge.order_weights and not math.isclose(order_total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+                    raise ValueError(f"order weights on edge {edge!r} sum to {order_total}, not 1")
                 total += edge.probability
             if edges and not math.isclose(total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
                 raise ValueError(f"outgoing probabilities from {state!r} sum to {total}, not 1")

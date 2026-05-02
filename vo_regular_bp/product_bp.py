@@ -17,6 +17,7 @@ class ProductEdge:
     symbol: Symbol
     probability: float
     next_state: ProductState
+    order_weights: tuple[tuple[int, float], ...] = ()
 
 
 @dataclass
@@ -62,6 +63,20 @@ class ProductBPResult:
                 weighted.append((edge, weight))
         return tuple(weighted)
 
+    def _sample_edge(self, time: int, state: ProductState, generator: random.Random) -> ProductEdge:
+        weighted = self.transition_weights(time, state)
+        total = sum(weight for _, weight in weighted)
+        if total <= 0.0:
+            raise RuntimeError("BP table contains no positive continuation for a reachable state")
+        threshold = generator.random() * total
+        cumulative = 0.0
+        chosen = weighted[-1][0]
+        for edge, weight in weighted:
+            cumulative += weight
+            if threshold <= cumulative:
+                return edge
+        return chosen
+
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
         """Draw one exact sample from the constrained distribution."""
 
@@ -72,18 +87,7 @@ class ProductBPResult:
         state = self.start_state
         output: list[Symbol] = []
         for time in range(self.length):
-            weighted = self.transition_weights(time, state)
-            total = sum(weight for _, weight in weighted)
-            if total <= 0.0:
-                raise RuntimeError("BP table contains no positive continuation for a reachable state")
-            threshold = generator.random() * total
-            cumulative = 0.0
-            chosen = weighted[-1][0]
-            for edge, weight in weighted:
-                cumulative += weight
-                if threshold <= cumulative:
-                    chosen = edge
-                    break
+            chosen = self._sample_edge(time, state, generator)
             output.append(chosen.symbol)
             state = chosen.next_state
         return tuple(output)
@@ -91,6 +95,41 @@ class ProductBPResult:
     def sample_many(self, count: int, *, rng: random.Random | int | None = None) -> list[tuple[Symbol, ...]]:
         generator = _coerce_rng(rng)
         return [self.sample(rng=generator) for _ in range(count)]
+
+    def sample_with_orders(
+        self,
+        *,
+        rng: random.Random | int | None = None,
+    ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
+        """Draw one exact sample and a latent order used at each event.
+
+        For explicit backoff edges, the order is sampled from the posterior
+        contribution of each suffix order to the selected symbol. For ordinary
+        MLE edges without order metadata, the current context length is used.
+        """
+
+        generator = _coerce_rng(rng)
+        if self.partition_function <= 0.0:
+            raise ValueError("cannot sample because the constrained partition function is zero")
+
+        state = self.start_state
+        output: list[Symbol] = []
+        orders: list[int] = []
+        for time in range(self.length):
+            chosen = self._sample_edge(time, state, generator)
+            output.append(chosen.symbol)
+            orders.append(_sample_order(chosen.order_weights, generator))
+            state = chosen.next_state
+        return tuple(output), tuple(orders)
+
+    def sample_many_with_orders(
+        self,
+        count: int,
+        *,
+        rng: random.Random | int | None = None,
+    ) -> list[tuple[tuple[Symbol, ...], tuple[int, ...]]]:
+        generator = _coerce_rng(rng)
+        return [self.sample_with_orders(rng=generator) for _ in range(count)]
 
     def conditional_probability(self, sequence: Sequence[Symbol]) -> float:
         """Probability of ``sequence`` under the constrained BP distribution."""
@@ -161,6 +200,7 @@ def run_bp(
                         symbol=edge.symbol,
                         probability=edge.probability,
                         next_state=next_product_state,
+                        order_weights=edge.order_weights or ((len(context_state), 1.0),),
                     )
                 )
                 next_layer.add(next_product_state)
@@ -223,3 +263,16 @@ def _coerce_rng(rng: random.Random | int | None) -> random.Random:
     if isinstance(rng, int):
         return random.Random(rng)
     return rng
+
+
+def _sample_order(order_weights: tuple[tuple[int, float], ...], rng: random.Random) -> int:
+    if not order_weights:
+        return 0
+    threshold = rng.random() * sum(weight for _, weight in order_weights)
+    cumulative = 0.0
+    chosen = order_weights[-1][0]
+    for order, weight in order_weights:
+        cumulative += weight
+        if threshold <= cumulative:
+            return order
+    return chosen
