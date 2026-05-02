@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import random
-from typing import Protocol
+from typing import Hashable, Protocol
 
+from .acceptors import DFA
 from .context import Context, Symbol, _as_context
 from .positional_bp import PositionConstraint, PositionConstraints, _allows, _coerce_rng
 
@@ -529,3 +530,228 @@ def _validate_constraint_positions(
     for position in constraints:
         if position < 0 or position >= length:
             raise IndexError(f"constraint position {position} is outside length {length}")
+
+
+@dataclass
+class _RegularBackwardCache:
+    graph: FixedOrderContextGraph
+    acceptor: DFA
+    length: int
+    memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
+    expanded_edges: dict[tuple[int, int, Hashable], int] = field(default_factory=dict)
+
+    def beta(self, time: int, state: int, acceptor_state: Hashable) -> float:
+        key = (time, state, acceptor_state)
+        cached = self.memo.get(key)
+        if cached is not None:
+            return cached
+
+        if time == self.length:
+            value = 1.0 if self.acceptor.is_accepting(acceptor_state) else 0.0
+            self.memo[key] = value
+            return value
+
+        total = 0.0
+        edge_count = 0
+        for edge in self.graph.outgoing[state]:
+            next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+            if next_acceptor_state is None:
+                continue
+            edge_count += 1
+            total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+        self.expanded_edges[key] = edge_count
+        self.memo[key] = total
+        return total
+
+    @property
+    def time_indexed_product_state_count(self) -> int:
+        return len(self.memo)
+
+    @property
+    def unique_product_state_count(self) -> int:
+        return len({(state, acceptor_state) for _time, state, acceptor_state in self.memo})
+
+    @property
+    def product_edge_count(self) -> int:
+        return sum(self.expanded_edges.values())
+
+
+@dataclass
+class RegularOrderStackBPResult:
+    """Constrained order-stack BP with a deterministic regular acceptor.
+
+    This result is a generation policy, not exact conditioning of one fixed
+    stochastic source.  At each step it asks each order graph for edges with
+    positive future mass under the acceptor, lets the policy select an order,
+    and normalizes over the selected order's feasible outgoing edge weights.
+    """
+
+    model: OrderStackModel
+    length: int
+    prefix: Context
+    acceptor: DFA
+    start_acceptor_state: Hashable
+    graphs: dict[int, FixedOrderContextGraph]
+    backwards: dict[int, _RegularBackwardCache]
+    policy: OrderPolicy
+
+    @property
+    def context_state_count(self) -> int:
+        return sum(len(graph.contexts) for graph in self.graphs.values())
+
+    @property
+    def context_edge_count(self) -> int:
+        return sum(graph.edge_count for graph in self.graphs.values())
+
+    @property
+    def product_state_count(self) -> int:
+        return sum(cache.unique_product_state_count for cache in self.backwards.values())
+
+    @property
+    def time_indexed_product_state_count(self) -> int:
+        return sum(cache.time_indexed_product_state_count for cache in self.backwards.values())
+
+    @property
+    def product_edge_count(self) -> int:
+        return sum(cache.product_edge_count for cache in self.backwards.values())
+
+    @property
+    def success_mass(self) -> float:
+        return 1.0 if self._candidate_sets(0, self.prefix, self.start_acceptor_state) else 0.0
+
+    def start_order_masses(self) -> tuple[tuple[int, float], ...]:
+        masses: list[tuple[int, float]] = []
+        max_order = min(self.model.max_order, len(self.prefix))
+        for order in range(1, max_order + 1):
+            graph = self.graphs[order]
+            state = graph.state_id(tuple(self.prefix[-order:]))
+            mass = (
+                self.backwards[order].beta(0, state, self.start_acceptor_state)
+                if state is not None
+                else 0.0
+            )
+            masses.append((order, mass))
+        return tuple(masses)
+
+    def sample_with_trace(
+        self,
+        *,
+        rng: random.Random | int | None = None,
+    ) -> tuple[tuple[Symbol, ...], tuple[OrderSampleStep, ...]]:
+        generator = _coerce_rng(rng)
+        history = list(self.prefix)
+        output: list[Symbol] = []
+        trace: list[OrderSampleStep] = []
+        acceptor_state = self.start_acceptor_state
+
+        for position in range(self.length):
+            candidate_sets = self._candidate_sets(position, history, acceptor_state)
+            choice = self.policy.choose(candidate_sets, generator)
+            if choice is None:
+                raise ValueError("No order has positive constrained future mass.")
+            edge = choice.edge
+            next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+            if next_acceptor_state is None:
+                raise RuntimeError("selected edge is not accepted by the DFA")
+            output.append(edge.symbol)
+            history.append(edge.symbol)
+            acceptor_state = next_acceptor_state
+            trace.append(_sample_step(position, choice))
+
+        if not self.acceptor.is_accepting(acceptor_state):
+            raise RuntimeError("order-stack policy ended in a non-accepting DFA state")
+        return tuple(output), tuple(trace)
+
+    def sample_with_orders(
+        self,
+        *,
+        rng: random.Random | int | None = None,
+    ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
+        sequence, trace = self.sample_with_trace(rng=rng)
+        return sequence, tuple(step.order for step in trace)
+
+    def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
+        return self.sample_with_trace(rng=rng)[0]
+
+    def sample_many_with_orders(
+        self,
+        count: int,
+        *,
+        rng: random.Random | int | None = None,
+    ) -> list[tuple[tuple[Symbol, ...], tuple[int, ...]]]:
+        generator = _coerce_rng(rng)
+        return [self.sample_with_orders(rng=generator) for _ in range(count)]
+
+    def _candidate_sets(
+        self,
+        position: int,
+        history: Sequence[Symbol],
+        acceptor_state: Hashable,
+    ) -> list[OrderCandidateSet]:
+        candidate_sets: list[OrderCandidateSet] = []
+        max_order = min(self.model.max_order, len(history))
+        for order in range(max_order, 0, -1):
+            graph = self.graphs[order]
+            context = tuple(history[-order:])
+            state = graph.state_id(context)
+            if state is None:
+                continue
+            candidates: list[StackEdge] = []
+            weights: list[float] = []
+            cache = self.backwards[order]
+            for edge in graph.outgoing[state]:
+                if edge.symbol in self.model.forbidden_symbols:
+                    continue
+                next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                if next_acceptor_state is None:
+                    continue
+                weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                if weight <= 0.0:
+                    continue
+                candidates.append(edge)
+                weights.append(weight)
+            if candidates:
+                candidate_sets.append(
+                    OrderCandidateSet(
+                        order=order,
+                        graph=graph,
+                        state=state,
+                        edges=tuple(candidates),
+                        weights=tuple(weights),
+                    )
+                )
+        return candidate_sets
+
+
+def run_order_stack_dfa_bp(
+    model: OrderStackModel,
+    acceptor: DFA,
+    *,
+    length: int,
+    prefix: Sequence[Symbol],
+    start_acceptor_state: Hashable | None = None,
+    policy: OrderPolicy | None = None,
+) -> RegularOrderStackBPResult:
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    if not prefix:
+        raise ValueError("order-stack BP requires a non-empty prefix")
+    active_policy = policy or LongestFeasiblePolicy()
+    acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
+    graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
+    backwards = {
+        order: _RegularBackwardCache(graph, acceptor, length)
+        for order, graph in graphs.items()
+    }
+    result = RegularOrderStackBPResult(
+        model=model,
+        length=length,
+        prefix=tuple(prefix),
+        acceptor=acceptor,
+        start_acceptor_state=acceptor0,
+        graphs=graphs,
+        backwards=backwards,
+        policy=active_policy,
+    )
+    result.start_order_masses()
+    return result

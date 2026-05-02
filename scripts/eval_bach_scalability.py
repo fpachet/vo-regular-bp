@@ -8,6 +8,7 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 import random
+import statistics
 import sys
 import time
 import tracemalloc
@@ -18,16 +19,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from vo_regular_bp import (  # noqa: E402
     ContextGraph,
     DFA,
+    LongestFeasiblePolicy,
+    OrderStackModel,
     all_of,
     forbidden_substring_acceptor,
     positional_acceptor,
     run_bp,
+    run_order_stack_dfa_bp,
 )
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "bach_prelude_c_major_pitches.txt"
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "outputs" / "bach_scalability.csv"
 
-GraphCache = dict[tuple[int, float], ContextGraph]
+GraphCache = dict[tuple[str, int, float], ContextGraph]
+StackModelCache = dict[int, OrderStackModel]
 ConstraintCache = dict[tuple[tuple[int, ...], int, int, int], tuple[DFA, object, int, int]]
 
 
@@ -38,12 +43,13 @@ class BachConfig:
     forbidden_ngram: int
     final_pitch_class: int = 0
     backoff_weight: float = 0.25
+    source_policy: str = "pure"
 
 
 @dataclass(frozen=True)
 class BachResult:
     config: BachConfig
-    graph: ContextGraph
+    graph: ContextGraph | None
     acceptor: DFA
     start_context: tuple[int, ...]
     start_acceptor_state: object
@@ -55,6 +61,8 @@ class BachResult:
     bp_s: float
     sampling_s: float
     peak_memory_mib: float
+    context_states: int
+    context_edges: int
     acceptor_states: int
     acceptor_edges: int
     full_product_edge_upper_bound: int
@@ -65,6 +73,8 @@ class BachResult:
     selected_order_avg: float
     selected_order_hist: tuple[tuple[int, int], ...]
     partition_function: float
+    mass_kind: str
+    order_start_masses: tuple[tuple[int, float], ...] = ()
 
     def row(self, train_length: int, alphabet_size: int, sample_count: int) -> dict[str, object]:
         sampling_per_sequence = self.sampling_s / len(self.samples) if self.samples else 0.0
@@ -74,6 +84,7 @@ class BachResult:
             else 0.0
         )
         return {
+            "source_policy": self.config.source_policy,
             "K": self.config.max_order,
             "n": self.config.horizon,
             "M": self.config.forbidden_ngram,
@@ -81,8 +92,8 @@ class BachResult:
             "backoff_weight": self.config.backoff_weight,
             "alphabet_size": alphabet_size,
             "training_length": train_length,
-            "context_states": len(self.graph.states),
-            "context_edges": self.graph.edge_count(),
+            "context_states": self.context_states,
+            "context_edges": self.context_edges,
             "acceptor_states": self.acceptor_states,
             "acceptor_edges": self.acceptor_edges,
             "reachable_product_states": self.bp_unique_states,
@@ -98,6 +109,10 @@ class BachResult:
             "sampling_per_event_s": f"{sampling_per_event:.10f}",
             "peak_memory_mib": f"{self.peak_memory_mib:.3f}",
             "partition_function": f"{self.partition_function:.12g}",
+            "mass_kind": self.mass_kind,
+            "order_start_masses": " ".join(
+                f"{order}:{mass:.12g}" for order, mass in self.order_start_masses
+            ),
             "requested_samples": sample_count,
             "samples_generated": len(self.samples),
             "constraint_violations": self.constraint_violations,
@@ -228,19 +243,27 @@ def run_configuration(
     samples: int,
     seed: int,
     graph_cache: GraphCache | None = None,
+    stack_model_cache: StackModelCache | None = None,
     constraint_cache: ConstraintCache | None = None,
 ) -> BachResult:
-    graph_key = (config.max_order, config.backoff_weight)
+    if config.source_policy == "policy_stack":
+        return run_policy_stack_configuration(
+            pitches,
+            config,
+            prefix=prefix,
+            samples=samples,
+            seed=seed,
+            stack_model_cache=stack_model_cache,
+            constraint_cache=constraint_cache,
+        )
+
+    graph_key = (config.source_policy, config.max_order, config.backoff_weight)
     if graph_cache is not None and graph_key in graph_cache:
         graph = graph_cache[graph_key]
         context_build_s = 0.0
     else:
         t0 = time.perf_counter()
-        graph = ContextGraph.from_backoff_sequences(
-            [pitches],
-            max_order=config.max_order,
-            backoff_weight=config.backoff_weight,
-        )
+        graph = build_source_graph(pitches, config)
         context_build_s = time.perf_counter() - t0
         if graph_cache is not None:
             graph_cache[graph_key] = graph
@@ -331,6 +354,8 @@ def run_configuration(
         bp_s=bp_s,
         sampling_s=sampling_s,
         peak_memory_mib=peak / (1024 * 1024),
+        context_states=len(graph.states),
+        context_edges=graph.edge_count(),
         acceptor_states=acceptor_states,
         acceptor_edges=acceptor_edges,
         full_product_edge_upper_bound=acceptor_states * graph.edge_count(),
@@ -341,11 +366,163 @@ def run_configuration(
         selected_order_avg=selected_order_avg,
         selected_order_hist=tuple(sorted(order_counts.items())),
         partition_function=bp.partition_function,
+        mass_kind="partition_function",
     )
     object.__setattr__(result, "_bp_unique_states", bp.unique_product_state_count)
     object.__setattr__(result, "_bp_time_indexed_states", bp.time_indexed_product_state_count)
     object.__setattr__(result, "_bp_edges", bp.product_edge_count)
     return result
+
+
+def run_policy_stack_configuration(
+    pitches: Sequence[int],
+    config: BachConfig,
+    *,
+    prefix: Sequence[int],
+    samples: int,
+    seed: int,
+    stack_model_cache: StackModelCache | None = None,
+    constraint_cache: ConstraintCache | None = None,
+) -> BachResult:
+    if config.max_order < 1:
+        raise ValueError("policy_stack requires max_order >= 1")
+
+    if stack_model_cache is not None and config.max_order in stack_model_cache:
+        model = stack_model_cache[config.max_order]
+        context_build_s = 0.0
+    else:
+        t0 = time.perf_counter()
+        model = OrderStackModel.from_sequences([pitches], max_order=config.max_order)
+        context_build_s = time.perf_counter() - t0
+        if stack_model_cache is not None:
+            stack_model_cache[config.max_order] = model
+
+    alphabet = tuple(sorted(model.alphabet))
+    constraint_key = (
+        alphabet,
+        config.horizon,
+        config.forbidden_ngram,
+        config.final_pitch_class,
+    )
+    if constraint_cache is not None and constraint_key in constraint_cache:
+        acceptor, start_acceptor_state, acceptor_states, acceptor_edges = constraint_cache[constraint_key]
+        acceptor_build_s = 0.0
+    else:
+        acceptor, start_acceptor_state, acceptor_states, acceptor_edges, acceptor_build_s = build_constraint_acceptor(
+            pitches,
+            alphabet,
+            config.horizon,
+            config.forbidden_ngram,
+            config.final_pitch_class,
+            prefix,
+        )
+        if constraint_cache is not None:
+            constraint_cache[constraint_key] = (
+                acceptor,
+                start_acceptor_state,
+                acceptor_states,
+                acceptor_edges,
+            )
+
+    tracemalloc.start()
+    t1 = time.perf_counter()
+    bp = run_order_stack_dfa_bp(
+        model,
+        acceptor,
+        length=config.horizon,
+        prefix=prefix,
+        start_acceptor_state=start_acceptor_state,
+        policy=LongestFeasiblePolicy(),
+    )
+    order_start_masses = bp.start_order_masses()
+    success_mass = bp.success_mass
+    bp_s = time.perf_counter() - t1
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    rng = random.Random(seed)
+    generated: list[tuple[int, ...]] = []
+    generated_orders: list[tuple[int, ...]] = []
+    t2 = time.perf_counter()
+    if success_mass > 0.0:
+        generated_with_orders = bp.sample_many_with_orders(samples, rng=rng)
+        generated = [tuple(int(symbol) for symbol in sample) for sample, _orders in generated_with_orders]
+        generated_orders = [orders for _sample, orders in generated_with_orders]
+    sampling_s = time.perf_counter() - t2
+
+    training_windows = {
+        length: forbidden_windows(pitches, length)
+        for length in range(1, config.horizon + 1)
+    }
+    copied = [longest_copied_span(sample, training_windows) for sample in generated]
+    violations = sum(
+        1
+        for sample in generated
+        if not accepts_from(acceptor, sample, start_acceptor_state)
+    )
+    order_counts: dict[int, int] = {}
+    for orders in generated_orders:
+        for order in orders:
+            order_counts[order] = order_counts.get(order, 0) + 1
+    order_total = sum(order_counts.values())
+    selected_order_avg = (
+        sum(order * count for order, count in order_counts.items()) / order_total
+        if order_total
+        else 0.0
+    )
+
+    context_states = bp.context_state_count
+    context_edges = bp.context_edge_count
+    start_context = tuple(prefix[-min(config.max_order, len(prefix)) :])
+    result = BachResult(
+        config=config,
+        graph=None,
+        acceptor=acceptor,
+        start_context=start_context,
+        start_acceptor_state=start_acceptor_state,
+        prefix=tuple(prefix),
+        samples=generated,
+        sample_orders=generated_orders,
+        context_build_s=context_build_s,
+        acceptor_build_s=acceptor_build_s,
+        bp_s=bp_s,
+        sampling_s=sampling_s,
+        peak_memory_mib=peak / (1024 * 1024),
+        context_states=context_states,
+        context_edges=context_edges,
+        acceptor_states=acceptor_states,
+        acceptor_edges=acceptor_edges,
+        full_product_edge_upper_bound=acceptor_states * context_edges,
+        dense_lifted_state_count=len(alphabet) ** config.max_order,
+        constraint_violations=violations,
+        longest_copy_max=max(copied, default=0),
+        longest_copy_avg=sum(copied) / len(copied) if copied else 0.0,
+        selected_order_avg=selected_order_avg,
+        selected_order_hist=tuple(sorted(order_counts.items())),
+        partition_function=success_mass,
+        mass_kind="policy_success_mass",
+        order_start_masses=order_start_masses,
+    )
+    object.__setattr__(result, "_bp_unique_states", bp.product_state_count)
+    object.__setattr__(result, "_bp_time_indexed_states", bp.time_indexed_product_state_count)
+    object.__setattr__(result, "_bp_edges", bp.product_edge_count)
+    return result
+
+
+def build_source_graph(pitches: Sequence[int], config: BachConfig) -> ContextGraph:
+    """Build the stochastic source graph for the Bach experiment."""
+
+    if config.source_policy == "pure":
+        return ContextGraph.from_sequences([pitches], max_order=config.max_order)
+    if config.source_policy == "mixture":
+        return ContextGraph.from_backoff_sequences(
+            [pitches],
+            max_order=config.max_order,
+            backoff_weight=config.backoff_weight,
+        )
+    raise ValueError(
+        f"unknown source policy {config.source_policy!r}; expected 'pure', 'mixture', or 'policy_stack'"
+    )
 
 
 def parse_ints(values: list[str]) -> list[int]:
@@ -354,6 +531,7 @@ def parse_ints(values: list[str]) -> list[int]:
 
 def print_table(rows: list[dict[str, object]]) -> None:
     columns = [
+        "source_policy",
         "K",
         "n",
         "M",
@@ -370,9 +548,11 @@ def print_table(rows: list[dict[str, object]]) -> None:
         "bp_s",
         "sampling_per_sequence_s",
         "partition_function",
+        "mass_kind",
         "constraint_violations",
         "longest_copy_avg",
         "selected_order_avg",
+        "order_start_masses",
     ]
     print(",".join(columns))
     for row in rows:
@@ -388,6 +568,50 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
+def _raw_output_path(output: Path) -> Path:
+    return output.with_name(f"{output.stem}_raw{output.suffix}")
+
+
+def _config_key(row: dict[str, object]) -> tuple[object, ...]:
+    return (
+        row["source_policy"],
+        row["K"],
+        row["n"],
+        row["M"],
+        row["final_pitch_class"],
+        row["backoff_weight"],
+    )
+
+
+def median_rows(raw_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    median_fields = {
+        "context_build_s",
+        "acceptor_build_s",
+        "bp_s",
+        "sampling_s",
+        "sampling_per_sequence_s",
+        "sampling_per_event_s",
+        "peak_memory_mib",
+        "partition_function",
+        "longest_copy_avg",
+        "selected_order_avg",
+    }
+    grouped: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    for row in raw_rows:
+        grouped.setdefault(_config_key(row), []).append(row)
+
+    rows: list[dict[str, object]] = []
+    for key in sorted(grouped):
+        group = grouped[key]
+        row = dict(group[0])
+        for field in median_fields:
+            row[field] = f"{statistics.median(float(item[field]) for item in group):.12g}"
+        row["label"] = "median"
+        row["repeat"] = "median"
+        rows.append(row)
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=DATA_PATH)
@@ -400,39 +624,83 @@ def main() -> None:
     parser.add_argument("--final-pitch-class", type=int, default=0)
     parser.add_argument("--prefix-length", type=int, default=6)
     parser.add_argument("--backoff-weight", type=float, default=0.25)
+    parser.add_argument("--warmups", type=int, default=0)
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--raw-output", type=Path, default=None)
+    parser.add_argument(
+        "--source-policy",
+        choices=("policy_stack", "pure", "mixture", "both", "all"),
+        default="policy_stack",
+        help=(
+            "'policy_stack' uses constrained longest-feasible order-stack backoff; "
+            "'pure' uses one fixed longest observed suffix MLE source; "
+            "'mixture' uses the smoothed suffix-mixture source; "
+            "'both' runs pure+mixture; 'all' runs policy_stack+pure+mixture."
+        ),
+    )
     args = parser.parse_args()
+    if args.warmups < 0 or args.repeats < 1:
+        raise ValueError("warmups must be non-negative and repeats must be positive")
 
     pitches = load_bach_pitches(args.data)
     if len(pitches) < args.prefix_length:
         raise ValueError("prefix length exceeds pitch sequence length")
     prefix = tuple(pitches[: args.prefix_length])
 
-    rows: list[dict[str, object]] = []
+    raw_rows: list[dict[str, object]] = []
     results: list[BachResult] = []
     graph_cache: GraphCache = {}
+    stack_model_cache: StackModelCache = {}
     constraint_cache: ConstraintCache = {}
+    if args.source_policy == "both":
+        source_policies = ["pure", "mixture"]
+    elif args.source_policy == "all":
+        source_policies = ["policy_stack", "pure", "mixture"]
+    else:
+        source_policies = [args.source_policy]
     configs = [
-        BachConfig(order, horizon, maxorder_gram, args.final_pitch_class, args.backoff_weight)
+        BachConfig(
+            order,
+            horizon,
+            maxorder_gram,
+            args.final_pitch_class,
+            args.backoff_weight,
+            source_policy,
+        )
+        for source_policy in source_policies
         for order in parse_ints(args.orders)
         for horizon in parse_ints(args.horizons)
         for maxorder_gram in parse_ints(args.maxorder_grams)
     ]
 
-    for index, config in enumerate(configs):
-        result = run_configuration(
-            pitches,
-            config,
-            prefix=prefix,
-            samples=args.samples,
-            seed=args.seed + index,
-            graph_cache=graph_cache,
-            constraint_cache=constraint_cache,
-        )
-        results.append(result)
-        rows.append(result.row(len(pitches), len(set(pitches)), args.samples))
+    for repeat in range(-args.warmups, args.repeats):
+        measured = repeat >= 0
+        for index, config in enumerate(configs):
+            seed_offset = (repeat if measured else 100_000 - repeat) * len(configs) + index
+            result = run_configuration(
+                pitches,
+                config,
+                prefix=prefix,
+                samples=args.samples,
+                seed=args.seed + seed_offset,
+                graph_cache=graph_cache,
+                stack_model_cache=stack_model_cache,
+                constraint_cache=constraint_cache,
+            )
+            if measured:
+                results.append(result)
+                row = result.row(len(pitches), len(set(pitches)), args.samples)
+                row["repeat"] = repeat
+                row["label"] = f"repeat_{repeat}"
+                raw_rows.append(row)
 
+    rows = raw_rows if args.repeats == 1 else median_rows(raw_rows)
     print_table(rows)
     write_csv(args.output, rows)
+    if args.repeats > 1 or args.warmups:
+        raw_output = args.raw_output or _raw_output_path(args.output)
+        write_csv(raw_output, raw_rows)
+        print(f"\nRaw CSV written to {raw_output}")
     print(f"\nCSV written to {args.output}")
 
     representative = next(

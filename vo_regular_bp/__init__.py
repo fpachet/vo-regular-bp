@@ -20,7 +20,9 @@ from .order_stack_bp import (
     LongestFeasiblePolicy,
     OrderStackBPResult,
     OrderStackModel,
+    RegularOrderStackBPResult,
     SingletonAvoidingBackoffPolicy,
+    run_order_stack_dfa_bp,
     run_order_stack_bp,
 )
 from .positional_bp import LazyBackoffContextModel, PositionalBPResult, run_positional_bp
@@ -36,6 +38,7 @@ __all__ = [
     "OrderStackModel",
     "PositionalBPResult",
     "ProductBPResult",
+    "RegularOrderStackBPResult",
     "SingletonAvoidingBackoffPolicy",
     "all_of",
     "brute_force_distribution",
@@ -46,6 +49,7 @@ __all__ = [
     "max_order_acceptor",
     "meter_acceptor",
     "positional_acceptor",
+    "run_order_stack_dfa_bp",
     "run_order_stack_bp",
     "run_positional_bp",
     "run_bp",

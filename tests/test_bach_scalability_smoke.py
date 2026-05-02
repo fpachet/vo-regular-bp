@@ -22,7 +22,7 @@ from vo_regular_bp import (
 
 def test_bach_scalability_smoke():
     pitches = load_bach_pitches()
-    config = BachConfig(max_order=3, horizon=16, forbidden_ngram=4)
+    config = BachConfig(max_order=3, horizon=16, forbidden_ngram=4, source_policy="mixture")
 
     t0 = time.perf_counter()
     result = run_configuration(
@@ -44,6 +44,32 @@ def test_bach_scalability_smoke():
     assert all(len(orders) == config.horizon for orders in result.sample_orders)
     assert all(0 <= order <= config.max_order for orders in result.sample_orders for order in orders)
     assert result.selected_order_avg > 0.0
+    assert result.constraint_violations == 0
+    assert all(
+        accepts_from(result.acceptor, sample, result.start_acceptor_state)
+        for sample in result.samples
+    )
+
+
+def test_bach_policy_stack_regular_smoke():
+    pitches = load_bach_pitches()
+    config = BachConfig(max_order=3, horizon=16, forbidden_ngram=4, source_policy="policy_stack")
+
+    result = run_configuration(
+        pitches,
+        config,
+        prefix=pitches[:6],
+        samples=10,
+        seed=321,
+    )
+
+    assert math.isfinite(result.bp_s)
+    assert result.partition_function == 1.0
+    assert result.mass_kind == "policy_success_mass"
+    assert result.bp_unique_states > 0
+    assert result.bp_edges > 0
+    assert len(result.samples) == 10
+    assert len(result.sample_orders) == 10
     assert result.constraint_violations == 0
     assert all(
         accepts_from(result.acceptor, sample, result.start_acceptor_state)
