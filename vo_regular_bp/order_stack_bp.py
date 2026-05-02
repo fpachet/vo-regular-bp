@@ -18,7 +18,7 @@ from typing import Hashable, Protocol
 
 from .acceptors import DFA
 from .context import Context, Symbol, _as_context
-from .positional_bp import PositionConstraint, PositionConstraints, _allows, _coerce_rng
+from .positional_bp import PositionConstraint, PositionConstraints, _coerce_rng
 
 
 @dataclass(frozen=True)
@@ -460,16 +460,37 @@ class OrderStackBPResult:
             candidates = []
             weights = []
             beta_next = self.backwards[order][position + 1]
-            for edge in graph.outgoing[state]:
-                if edge.symbol in self.model.forbidden_symbols:
-                    continue
-                if not _allows(constraint, edge.symbol):
-                    continue
-                weight = edge.probability * beta_next[edge.dst]
-                if weight <= 0.0:
-                    continue
-                candidates.append(edge)
-                weights.append(weight)
+            if constraint is None:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    weight = edge.probability * beta_next[edge.dst]
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            elif callable(constraint):
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if not constraint(edge.symbol):
+                        continue
+                    weight = edge.probability * beta_next[edge.dst]
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            else:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if edge.symbol not in constraint:
+                        continue
+                    weight = edge.probability * beta_next[edge.dst]
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
             if candidates:
                 candidate_sets.append(
                     OrderCandidateSet(
@@ -536,14 +557,32 @@ def _backward_messages(
         constraint = constraints.get(position)
         beta_next = backward[position + 1]
         beta = backward[position]
-        for state, edges in enumerate(graph.outgoing):
-            total = 0.0
-            for edge in edges:
-                if edge.symbol in forbidden_symbols:
-                    continue
-                if _allows(constraint, edge.symbol):
+        if constraint is None:
+            for state, edges in enumerate(graph.outgoing):
+                total = 0.0
+                for edge in edges:
+                    if edge.symbol in forbidden_symbols:
+                        continue
                     total += edge.probability * beta_next[edge.dst]
-            beta[state] = total
+                beta[state] = total
+        elif callable(constraint):
+            for state, edges in enumerate(graph.outgoing):
+                total = 0.0
+                for edge in edges:
+                    if edge.symbol in forbidden_symbols:
+                        continue
+                    if constraint(edge.symbol):
+                        total += edge.probability * beta_next[edge.dst]
+                beta[state] = total
+        else:
+            for state, edges in enumerate(graph.outgoing):
+                total = 0.0
+                for edge in edges:
+                    if edge.symbol in forbidden_symbols:
+                        continue
+                    if edge.symbol in constraint:
+                        total += edge.probability * beta_next[edge.dst]
+                beta[state] = total
     return backward
 
 
@@ -582,7 +621,7 @@ class _RegularBackwardCache:
     length: int
     constraints: PositionConstraints = field(default_factory=dict)
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
-    expanded_edges: dict[tuple[int, int, Hashable], int] = field(default_factory=dict)
+    expanded_edge_total: int = 0
     dense_transition_by_symbol: Mapping[Symbol, tuple[int, ...]] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -606,27 +645,67 @@ class _RegularBackwardCache:
         constraint = self.constraints.get(time)
         dense_transition_by_symbol = self.dense_transition_by_symbol
         if dense_transition_by_symbol is not None and isinstance(acceptor_state, int):
-            for edge in self.graph.outgoing[state]:
-                if not _allows(constraint, edge.symbol):
-                    continue
-                transitions = dense_transition_by_symbol.get(edge.symbol)
-                if transitions is None:
-                    continue
-                next_acceptor_state = transitions[acceptor_state]
-                if next_acceptor_state < 0:
-                    continue
-                edge_count += 1
-                total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            if constraint is None:
+                for edge in self.graph.outgoing[state]:
+                    transitions = dense_transition_by_symbol.get(edge.symbol)
+                    if transitions is None:
+                        continue
+                    next_acceptor_state = transitions[acceptor_state]
+                    if next_acceptor_state < 0:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            elif callable(constraint):
+                for edge in self.graph.outgoing[state]:
+                    if not constraint(edge.symbol):
+                        continue
+                    transitions = dense_transition_by_symbol.get(edge.symbol)
+                    if transitions is None:
+                        continue
+                    next_acceptor_state = transitions[acceptor_state]
+                    if next_acceptor_state < 0:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            else:
+                for edge in self.graph.outgoing[state]:
+                    if edge.symbol not in constraint:
+                        continue
+                    transitions = dense_transition_by_symbol.get(edge.symbol)
+                    if transitions is None:
+                        continue
+                    next_acceptor_state = transitions[acceptor_state]
+                    if next_acceptor_state < 0:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
         else:
-            for edge in self.graph.outgoing[state]:
-                if not _allows(constraint, edge.symbol):
-                    continue
-                next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
-                if next_acceptor_state is None:
-                    continue
-                edge_count += 1
-                total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
-        self.expanded_edges[key] = edge_count
+            if constraint is None:
+                for edge in self.graph.outgoing[state]:
+                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            elif callable(constraint):
+                for edge in self.graph.outgoing[state]:
+                    if not constraint(edge.symbol):
+                        continue
+                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            else:
+                for edge in self.graph.outgoing[state]:
+                    if edge.symbol not in constraint:
+                        continue
+                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+        self.expanded_edge_total += edge_count
         self.memo[key] = total
         return total
 
@@ -652,7 +731,7 @@ class _RegularBackwardCache:
 
     @property
     def product_edge_count(self) -> int:
-        return sum(self.expanded_edges.values())
+        return self.expanded_edge_total
 
 
 @dataclass
@@ -792,19 +871,46 @@ class RegularOrderStackBPResult:
             candidates: list[StackEdge] = []
             weights: list[float] = []
             cache = self.backwards[order]
-            for edge in graph.outgoing[state]:
-                if edge.symbol in self.model.forbidden_symbols:
-                    continue
-                if not _allows(constraint, edge.symbol):
-                    continue
-                next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
-                if next_acceptor_state is None:
-                    continue
-                weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
-                if weight <= 0.0:
-                    continue
-                candidates.append(edge)
-                weights.append(weight)
+            if constraint is None:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            elif callable(constraint):
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if not constraint(edge.symbol):
+                        continue
+                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            else:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if edge.symbol not in constraint:
+                        continue
+                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
             if candidates:
                 candidate_sets.append(
                     OrderCandidateSet(
