@@ -22,10 +22,11 @@ from vo_regular_bp import (  # noqa: E402
     LongestFeasiblePolicy,
     OrderStackModel,
     all_of,
+    dense_forbidden_substring_acceptor,
     forbidden_substring_acceptor,
     positional_acceptor,
     run_bp,
-    run_order_stack_dfa_bp,
+    run_order_stack_masked_dfa_bp,
 )
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "bach_prelude_c_major_pitches.txt"
@@ -33,7 +34,26 @@ DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "outputs" / "bach_scalabi
 
 GraphCache = dict[tuple[str, int, float], ContextGraph]
 StackModelCache = dict[int, OrderStackModel]
-ConstraintCache = dict[tuple[tuple[int, ...], int, int, int], tuple[DFA, object, int, int]]
+ConstraintCache = dict[tuple[object, ...], object]
+
+
+@dataclass(frozen=True)
+class GenericConstraintBundle:
+    acceptor: DFA
+    start_state: object
+    acceptor_states: int
+    acceptor_edges: int
+
+
+@dataclass(frozen=True)
+class PolicyStackConstraintBundle:
+    regular_acceptor: DFA
+    regular_start_state: object
+    positional_constraints: dict[int, frozenset[int]]
+    validation_acceptor: DFA
+    validation_start_state: object
+    acceptor_states: int
+    acceptor_edges: int
 
 
 @dataclass(frozen=True)
@@ -212,6 +232,64 @@ def build_constraint_acceptor(
     return acceptor, start_state, acceptor_states, acceptor_edges, time.perf_counter() - t0
 
 
+def build_policy_stack_optimized_constraint(
+    training_pitches: Sequence[int],
+    alphabet: Iterable[int],
+    horizon: int,
+    forbidden_ngram: int,
+    final_pitch_class: int,
+) -> tuple[PolicyStackConstraintBundle, float]:
+    alphabet_tuple = tuple(sorted(alphabet))
+    t0 = time.perf_counter()
+
+    final_pitches = frozenset(pitch for pitch in alphabet_tuple if pitch % 12 == final_pitch_class)
+    if not final_pitches:
+        raise ValueError(f"alphabet has no pitch class {final_pitch_class}")
+
+    regular_acceptor = dense_forbidden_substring_acceptor(
+        forbidden_windows(training_pitches, forbidden_ngram),
+        alphabet=alphabet_tuple,
+        name=f"dense_avoid_training_{forbidden_ngram}grams",
+    )
+    positional_constraints = {horizon - 1: final_pitches}
+
+    final_acceptor = positional_acceptor(
+        horizon,
+        positional_constraints,
+        alphabet=alphabet_tuple,
+        name="final_pitch_class",
+    )
+    validation_acceptor = all_of(
+        final_acceptor,
+        regular_acceptor,
+        name="validation_final_pc_and_maxorder",
+    )
+
+    bundle = PolicyStackConstraintBundle(
+        regular_acceptor=regular_acceptor,
+        regular_start_state=regular_acceptor.start_state,
+        positional_constraints=positional_constraints,
+        validation_acceptor=validation_acceptor,
+        validation_start_state=validation_acceptor.start_state,
+        acceptor_states=regular_acceptor.state_count() or 0,
+        acceptor_edges=count_dfa_edges(regular_acceptor, alphabet_tuple),
+    )
+    return bundle, time.perf_counter() - t0
+
+
+def count_dfa_edges(acceptor: DFA, alphabet: Sequence[int]) -> int:
+    if hasattr(acceptor, "edge_count"):
+        return int(acceptor.edge_count())
+    if acceptor.states is None:
+        return 0
+    edges = 0
+    for state in acceptor.states:
+        for symbol in alphabet:
+            if acceptor.next_state(state, symbol) is not None:
+                edges += 1
+    return edges
+
+
 def count_composite_edges(final_acceptor: DFA, forbidden_acceptor: DFA, alphabet: Sequence[int]) -> int:
     if final_acceptor.states is None or forbidden_acceptor.states is None:
         return 0
@@ -271,13 +349,20 @@ def run_configuration(
     alphabet = tuple(sorted(graph.alphabet))
     start_context = prefix_context(graph, prefix, config.max_order)
     constraint_key = (
+        "generic",
         alphabet,
         config.horizon,
         config.forbidden_ngram,
         config.final_pitch_class,
     )
     if constraint_cache is not None and constraint_key in constraint_cache:
-        acceptor, start_acceptor_state, acceptor_states, acceptor_edges = constraint_cache[constraint_key]
+        bundle = constraint_cache[constraint_key]
+        if not isinstance(bundle, GenericConstraintBundle):
+            raise TypeError("cached generic constraint has unexpected type")
+        acceptor = bundle.acceptor
+        start_acceptor_state = bundle.start_state
+        acceptor_states = bundle.acceptor_states
+        acceptor_edges = bundle.acceptor_edges
         acceptor_build_s = 0.0
     else:
         acceptor, start_acceptor_state, acceptor_states, acceptor_edges, acceptor_build_s = build_constraint_acceptor(
@@ -289,11 +374,11 @@ def run_configuration(
             prefix,
         )
         if constraint_cache is not None:
-            constraint_cache[constraint_key] = (
-                acceptor,
-                start_acceptor_state,
-                acceptor_states,
-                acceptor_edges,
+            constraint_cache[constraint_key] = GenericConstraintBundle(
+                acceptor=acceptor,
+                start_state=start_acceptor_state,
+                acceptor_states=acceptor_states,
+                acceptor_edges=acceptor_edges,
             )
 
     tracemalloc.start()
@@ -399,39 +484,37 @@ def run_policy_stack_configuration(
 
     alphabet = tuple(sorted(model.alphabet))
     constraint_key = (
+        "policy_stack_optimized",
         alphabet,
         config.horizon,
         config.forbidden_ngram,
         config.final_pitch_class,
     )
     if constraint_cache is not None and constraint_key in constraint_cache:
-        acceptor, start_acceptor_state, acceptor_states, acceptor_edges = constraint_cache[constraint_key]
+        constraint_bundle = constraint_cache[constraint_key]
+        if not isinstance(constraint_bundle, PolicyStackConstraintBundle):
+            raise TypeError("cached policy-stack constraint has unexpected type")
         acceptor_build_s = 0.0
     else:
-        acceptor, start_acceptor_state, acceptor_states, acceptor_edges, acceptor_build_s = build_constraint_acceptor(
+        constraint_bundle, acceptor_build_s = build_policy_stack_optimized_constraint(
             pitches,
             alphabet,
             config.horizon,
             config.forbidden_ngram,
             config.final_pitch_class,
-            prefix,
         )
         if constraint_cache is not None:
-            constraint_cache[constraint_key] = (
-                acceptor,
-                start_acceptor_state,
-                acceptor_states,
-                acceptor_edges,
-            )
+            constraint_cache[constraint_key] = constraint_bundle
 
     tracemalloc.start()
     t1 = time.perf_counter()
-    bp = run_order_stack_dfa_bp(
+    bp = run_order_stack_masked_dfa_bp(
         model,
-        acceptor,
+        constraint_bundle.regular_acceptor,
         length=config.horizon,
         prefix=prefix,
-        start_acceptor_state=start_acceptor_state,
+        constraints=constraint_bundle.positional_constraints,
+        start_acceptor_state=constraint_bundle.regular_start_state,
         policy=LongestFeasiblePolicy(),
     )
     order_start_masses = bp.start_order_masses()
@@ -458,7 +541,11 @@ def run_policy_stack_configuration(
     violations = sum(
         1
         for sample in generated
-        if not accepts_from(acceptor, sample, start_acceptor_state)
+        if not accepts_from(
+            constraint_bundle.validation_acceptor,
+            sample,
+            constraint_bundle.validation_start_state,
+        )
     )
     order_counts: dict[int, int] = {}
     for orders in generated_orders:
@@ -477,9 +564,9 @@ def run_policy_stack_configuration(
     result = BachResult(
         config=config,
         graph=None,
-        acceptor=acceptor,
+        acceptor=constraint_bundle.validation_acceptor,
         start_context=start_context,
-        start_acceptor_state=start_acceptor_state,
+        start_acceptor_state=constraint_bundle.validation_start_state,
         prefix=tuple(prefix),
         samples=generated,
         sample_orders=generated_orders,
@@ -490,9 +577,9 @@ def run_policy_stack_configuration(
         peak_memory_mib=peak / (1024 * 1024),
         context_states=context_states,
         context_edges=context_edges,
-        acceptor_states=acceptor_states,
-        acceptor_edges=acceptor_edges,
-        full_product_edge_upper_bound=acceptor_states * context_edges,
+        acceptor_states=constraint_bundle.acceptor_states,
+        acceptor_edges=constraint_bundle.acceptor_edges,
+        full_product_edge_upper_bound=constraint_bundle.acceptor_states * context_edges,
         dense_lifted_state_count=len(alphabet) ** config.max_order,
         constraint_violations=violations,
         longest_copy_max=max(copied, default=0),

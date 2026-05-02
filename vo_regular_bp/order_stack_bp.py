@@ -537,8 +537,15 @@ class _RegularBackwardCache:
     graph: FixedOrderContextGraph
     acceptor: DFA
     length: int
+    constraints: PositionConstraints = field(default_factory=dict)
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
     expanded_edges: dict[tuple[int, int, Hashable], int] = field(default_factory=dict)
+    dense_transition_by_symbol: Mapping[Symbol, tuple[int, ...]] | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        dense = getattr(self.acceptor, "dense_transition_by_symbol", None)
+        if dense is not None:
+            self.dense_transition_by_symbol = dense
 
     def beta(self, time: int, state: int, acceptor_state: Hashable) -> float:
         key = (time, state, acceptor_state)
@@ -553,15 +560,44 @@ class _RegularBackwardCache:
 
         total = 0.0
         edge_count = 0
-        for edge in self.graph.outgoing[state]:
-            next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
-            if next_acceptor_state is None:
-                continue
-            edge_count += 1
-            total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+        constraint = self.constraints.get(time)
+        dense_transition_by_symbol = self.dense_transition_by_symbol
+        if dense_transition_by_symbol is not None and isinstance(acceptor_state, int):
+            for edge in self.graph.outgoing[state]:
+                if not _allows(constraint, edge.symbol):
+                    continue
+                transitions = dense_transition_by_symbol.get(edge.symbol)
+                if transitions is None:
+                    continue
+                next_acceptor_state = transitions[acceptor_state]
+                if next_acceptor_state < 0:
+                    continue
+                edge_count += 1
+                total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+        else:
+            for edge in self.graph.outgoing[state]:
+                if not _allows(constraint, edge.symbol):
+                    continue
+                next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                if next_acceptor_state is None:
+                    continue
+                edge_count += 1
+                total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
         self.expanded_edges[key] = edge_count
         self.memo[key] = total
         return total
+
+    def next_acceptor_state(self, acceptor_state: Hashable, symbol: Symbol) -> Hashable | None:
+        dense_transition_by_symbol = self.dense_transition_by_symbol
+        if dense_transition_by_symbol is not None and isinstance(acceptor_state, int):
+            transitions = dense_transition_by_symbol.get(symbol)
+            if transitions is None:
+                return None
+            next_state = transitions[acceptor_state]
+            if next_state < 0:
+                return None
+            return next_state
+        return self.acceptor.next_state(acceptor_state, symbol)
 
     @property
     def time_indexed_product_state_count(self) -> int:
@@ -594,6 +630,7 @@ class RegularOrderStackBPResult:
     graphs: dict[int, FixedOrderContextGraph]
     backwards: dict[int, _RegularBackwardCache]
     policy: OrderPolicy
+    constraints: PositionConstraints = field(default_factory=dict)
 
     @property
     def context_state_count(self) -> int:
@@ -650,7 +687,8 @@ class RegularOrderStackBPResult:
             if choice is None:
                 raise ValueError("No order has positive constrained future mass.")
             edge = choice.edge
-            next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+            cache = self.backwards[choice.candidate_set.order]
+            next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
             if next_acceptor_state is None:
                 raise RuntimeError("selected edge is not accepted by the DFA")
             output.append(edge.symbol)
@@ -690,6 +728,7 @@ class RegularOrderStackBPResult:
     ) -> list[OrderCandidateSet]:
         candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
+        constraint = self.constraints.get(position)
         for order in range(max_order, 0, -1):
             graph = self.graphs[order]
             context = tuple(history[-order:])
@@ -702,7 +741,9 @@ class RegularOrderStackBPResult:
             for edge in graph.outgoing[state]:
                 if edge.symbol in self.model.forbidden_symbols:
                     continue
-                next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                if not _allows(constraint, edge.symbol):
+                    continue
+                next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
                 if next_acceptor_state is None:
                     continue
                 weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
@@ -732,15 +773,61 @@ def run_order_stack_dfa_bp(
     start_acceptor_state: Hashable | None = None,
     policy: OrderPolicy | None = None,
 ) -> RegularOrderStackBPResult:
+    return _run_order_stack_regular_bp(
+        model,
+        acceptor,
+        length=length,
+        prefix=prefix,
+        start_acceptor_state=start_acceptor_state,
+        constraints=None,
+        policy=policy,
+    )
+
+
+def run_order_stack_masked_dfa_bp(
+    model: OrderStackModel,
+    acceptor: DFA,
+    *,
+    length: int,
+    prefix: Sequence[Symbol],
+    constraints: PositionConstraints | None = None,
+    start_acceptor_state: Hashable | None = None,
+    policy: OrderPolicy | None = None,
+) -> RegularOrderStackBPResult:
+    """Run regular order-stack BP with additional time-indexed symbol masks."""
+
+    return _run_order_stack_regular_bp(
+        model,
+        acceptor,
+        length=length,
+        prefix=prefix,
+        start_acceptor_state=start_acceptor_state,
+        constraints=constraints,
+        policy=policy,
+    )
+
+
+def _run_order_stack_regular_bp(
+    model: OrderStackModel,
+    acceptor: DFA,
+    *,
+    length: int,
+    prefix: Sequence[Symbol],
+    start_acceptor_state: Hashable | None,
+    constraints: PositionConstraints | None,
+    policy: OrderPolicy | None,
+) -> RegularOrderStackBPResult:
     if length < 0:
         raise ValueError("length must be non-negative")
     if not prefix:
         raise ValueError("order-stack BP requires a non-empty prefix")
+    position_constraints = dict(constraints or {})
+    _validate_constraint_positions(position_constraints, length)
     active_policy = policy or LongestFeasiblePolicy()
     acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
     graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
     backwards = {
-        order: _RegularBackwardCache(graph, acceptor, length)
+        order: _RegularBackwardCache(graph, acceptor, length, constraints=position_constraints)
         for order, graph in graphs.items()
     }
     result = RegularOrderStackBPResult(
@@ -752,6 +839,7 @@ def run_order_stack_dfa_bp(
         graphs=graphs,
         backwards=backwards,
         policy=active_policy,
+        constraints=position_constraints,
     )
     result.start_order_masses()
     return result
