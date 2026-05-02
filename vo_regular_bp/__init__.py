@@ -17,7 +17,14 @@ from .brute_force import (
     brute_force_partition_function,
     conditional_distribution,
 )
-from .backend import run_constrained_order_stack
+from .backend import (
+    BackendDiagnostics,
+    ConstrainedOrderStackBackend,
+    GeneratedSequence,
+    prepare_constrained_order_stack,
+    prepare_constrained_order_stack_from_sequences,
+    run_constrained_order_stack,
+)
 from .constraints import (
     CompiledConstraints,
     ConstraintSet,
@@ -42,12 +49,15 @@ from .product_bp import ProductBPResult, run_bp, sample_exact
 
 __all__ = [
     "ContextGraph",
+    "BackendDiagnostics",
     "CompiledConstraints",
+    "ConstrainedOrderStackBackend",
     "ConstraintSet",
     "CumulativeMeterConstraint",
     "DFA",
     "DenseForbiddenSubstringDFA",
     "Edge",
+    "GeneratedSequence",
     "LazyBackoffContextModel",
     "LongestFeasiblePolicy",
     "MeterConstraint",
@@ -69,6 +79,8 @@ __all__ = [
     "max_order_acceptor",
     "meter_acceptor",
     "positional_acceptor",
+    "prepare_constrained_order_stack",
+    "prepare_constrained_order_stack_from_sequences",
     "run_constrained_order_stack",
     "run_order_stack_dfa_bp",
     "run_order_stack_masked_dfa_bp",

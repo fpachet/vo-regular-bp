@@ -385,6 +385,20 @@ class OrderStackBPResult:
     def bp_edge_relaxation_upper_bound(self) -> int:
         return self.length * self.context_edge_count
 
+    @property
+    def success_mass(self) -> float:
+        return 1.0 if self._candidate_sets(0, self.prefix) else 0.0
+
+    def start_order_masses(self) -> tuple[tuple[int, float], ...]:
+        masses: list[tuple[int, float]] = []
+        max_order = min(self.model.max_order, len(self.prefix))
+        for order in range(1, max_order + 1):
+            graph = self.graphs[order]
+            state = graph.state_id(tuple(self.prefix[-order:]))
+            mass = self.backwards[order][0][state] if state is not None else 0.0
+            masses.append((order, mass))
+        return tuple(masses)
+
     def sample_with_trace(
         self,
         *,

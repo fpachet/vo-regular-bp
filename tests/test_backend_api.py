@@ -3,11 +3,15 @@ import math
 import random
 
 from vo_regular_bp import (
+    BackendDiagnostics,
     ConstraintSet,
     CumulativeMeterConstraint,
+    GeneratedSequence,
     LongestFeasiblePolicy,
     MeterConstraint,
     OrderStackModel,
+    prepare_constrained_order_stack,
+    prepare_constrained_order_stack_from_sequences,
     run_constrained_order_stack,
 )
 
@@ -107,3 +111,65 @@ def test_backend_cumulative_meter_constraint_matches_enumerated_support():
 
     samples = [result.sample(rng=random.Random(seed)) for seed in range(20)]
     assert all(sum(sample) == 4 for sample in samples)
+
+
+def test_prepared_backend_samples_and_reports_diagnostics():
+    model = OrderStackModel.from_sequences([(0, 1, 0, 2, 0, 1, 0)], max_order=1)
+
+    backend = prepare_constrained_order_stack(
+        model,
+        ConstraintSet(positional={1: {0}}),
+        length=2,
+        prefix=(0,),
+        policy=LongestFeasiblePolicy(),
+    )
+
+    diagnostics = backend.diagnostics
+    assert isinstance(diagnostics, BackendDiagnostics)
+    assert diagnostics.backend == "order_stack_positional"
+    assert diagnostics.length == 2
+    assert diagnostics.max_order == 1
+    assert diagnostics.context_states > 0
+    assert diagnostics.context_edges > 0
+    assert diagnostics.success_mass == 1.0
+    assert diagnostics.start_order_masses == ((1, 1.0),)
+    assert diagnostics.as_dict()["backend"] == "order_stack_positional"
+
+    sample = backend.sample_with_orders(rng=random.Random(0))
+    assert isinstance(sample, GeneratedSequence)
+    assert sample.sequence[-1] == 0
+    assert len(sample.orders) == 2
+
+    samples = backend.sample_many_with_orders(5, rng=random.Random(1))
+    assert all(isinstance(item, GeneratedSequence) for item in samples)
+    assert all(item.sequence[-1] == 0 for item in samples)
+
+
+def test_prepared_backend_from_sequences_supports_regular_constraints():
+    training = (0, 1, 2, 1, 0, 2, 1, 2, 0)
+    forbidden = {tuple(training[index : index + 3]) for index in range(len(training) - 2)}
+
+    backend = prepare_constrained_order_stack_from_sequences(
+        [training],
+        ConstraintSet(
+            positional={2: {0}},
+            forbidden_substrings=forbidden,
+        ),
+        max_order=1,
+        length=3,
+        prefix=training[:2],
+        policy=LongestFeasiblePolicy(),
+    )
+
+    diagnostics = backend.diagnostics
+    assert diagnostics.backend == "order_stack_regular"
+    assert diagnostics.regular_product_states is not None
+    assert diagnostics.regular_product_edges is not None
+    assert diagnostics.success_mass == 1.0
+
+    samples = backend.sample_many(10, rng=random.Random(2))
+    assert all(sample[-1] == 0 for sample in samples)
+    assert all(
+        all(tuple(sample[index : index + 3]) not in forbidden for index in range(len(sample) - 2))
+        for sample in samples
+    )

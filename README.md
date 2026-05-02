@@ -134,24 +134,24 @@ samples, and optional order traces.
 
 ### Public Constraint Backend
 
-`run_constrained_order_stack(...)` is the library-facing wrapper for order-stack
-generation. It accepts a `ConstraintSet`, compiles positional constraints as
-time masks, compiles regular constraints as acceptors, and then dispatches to
-the appropriate backend.
+`prepare_constrained_order_stack(...)` is the recommended library-facing entry
+point for order-stack generation. It accepts a model and a `ConstraintSet`,
+compiles positional constraints as time masks, compiles regular constraints as
+acceptors, runs the backend once, and returns a reusable sampler.
 
 ```python
 from vo_regular_bp import (
     ConstraintSet,
     LongestFeasiblePolicy,
     OrderStackModel,
-    run_constrained_order_stack,
+    prepare_constrained_order_stack,
 )
 
 sequence = (60, 64, 67, 72, 76, 67, 71, 72)
 model = OrderStackModel.from_sequences([sequence], max_order=2)
 final_c = {pitch for pitch in sequence if pitch % 12 == 0}
 
-bp = run_constrained_order_stack(
+backend = prepare_constrained_order_stack(
     model,
     ConstraintSet(positional={3: final_c}),
     length=4,
@@ -159,9 +159,21 @@ bp = run_constrained_order_stack(
     policy=LongestFeasiblePolicy(),
 )
 
-sample, orders = bp.sample_with_orders(rng=0)
+generated = backend.sample_with_orders(rng=0)
+sample = generated.sequence
+orders = generated.orders
 assert sample[-1] % 12 == 0
 ```
+
+For convenience, `prepare_constrained_order_stack_from_sequences(...)` builds
+the `OrderStackModel` and prepares the backend in one call. The returned
+`ConstrainedOrderStackBackend` exposes `sample(...)`, `sample_many(...)`,
+`sample_with_orders(...)`, `sample_many_with_orders(...)`, `sample_with_trace(...)`,
+and a stable `diagnostics` object with context/product sizes and success mass
+when a regular backend is used.
+
+`run_constrained_order_stack(...)` remains available when callers need the raw
+internal BP result object.
 
 `ConstraintSet` supports:
 
@@ -193,10 +205,12 @@ For empirical checks:
 
 These are intended for tests, toy examples, and exactness validation.
 
-## Experiments
+## Paper Experiments
 
-The repository includes scripts used to validate exactness and benchmark Bach
-Prelude examples:
+The reusable library lives in `vo_regular_bp/`.  Paper-specific validation and
+benchmark implementations are kept under `paper/variable_order_regular_bp/`.
+The top-level `scripts/` files remain as compatibility launchers, so existing
+commands still work:
 
 ```bash
 python scripts/eval_tiny_exactness.py
