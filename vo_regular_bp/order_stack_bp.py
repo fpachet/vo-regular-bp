@@ -9,6 +9,7 @@ muddying the single-graph exact BP implementation.
 
 from __future__ import annotations
 
+import bisect
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,6 +37,15 @@ class OrderCandidateSet:
     state: int
     edges: tuple[StackEdge, ...]
     weights: tuple[float, ...]
+    cumulative_weights: tuple[float, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if len(self.edges) != len(self.weights):
+            raise ValueError("edges and weights must have the same length")
+        if self.cumulative_weights is None:
+            object.__setattr__(self, "cumulative_weights", _cumulative_weights(self.weights))
+        elif len(self.cumulative_weights) != len(self.weights):
+            raise ValueError("cumulative_weights and weights must have the same length")
 
 
 @dataclass(frozen=True)
@@ -77,7 +87,12 @@ class LongestFeasiblePolicy:
         rng: random.Random,
     ) -> CandidateChoice | None:
         for candidate_set in candidate_sets:
-            edge = rng.choices(candidate_set.edges, weights=candidate_set.weights, k=1)[0]
+            edge = _sample_from_weighted_edges(
+                candidate_set.edges,
+                candidate_set.weights,
+                candidate_set.cumulative_weights,
+                rng,
+            )
             return CandidateChoice(
                 candidate_set,
                 edge,
@@ -127,6 +142,7 @@ class SingletonAvoidingBackoffPolicy:
         for candidate_set in candidate_sets:
             edges = candidate_set.edges
             weights = candidate_set.weights
+            cumulative_weights = candidate_set.cumulative_weights
 
             if (
                 self.suppress_skipped_symbol
@@ -145,6 +161,7 @@ class SingletonAvoidingBackoffPolicy:
                     suppressed = True
                 edges = tuple(edge for edge, _ in filtered)
                 weights = tuple(weight for _, weight in filtered)
+                cumulative_weights = None
 
             if len(edges) == 1 and candidate_set.order >= self.min_singleton_order:
                 if rng.random() > self.singleton_acceptance_probability(candidate_set.order):
@@ -153,7 +170,7 @@ class SingletonAvoidingBackoffPolicy:
                     continue
                 skipped_symbol = None
 
-            edge = rng.choices(edges, weights=weights, k=1)[0]
+            edge = _sample_from_weighted_edges(edges, weights, cumulative_weights, rng)
             return CandidateChoice(
                 candidate_set,
                 edge,
@@ -350,6 +367,11 @@ class OrderStackBPResult:
     graphs: dict[int, FixedOrderContextGraph]
     backwards: dict[int, list[list[float]]]
     policy: OrderPolicy
+    _candidate_set_cache: dict[tuple[int, Context], tuple[OrderCandidateSet, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     @property
     def context_state_count(self) -> int:
@@ -406,7 +428,13 @@ class OrderStackBPResult:
         return [self.sample_with_orders(rng=generator) for _ in range(count)]
 
     def _candidate_sets(self, position: int, history: Sequence[Symbol]) -> list[OrderCandidateSet]:
-        candidate_sets = []
+        history_key = tuple(history[-self.model.max_order :])
+        cache_key = (position, history_key)
+        cached = self._candidate_set_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+        candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
         constraint = self.constraints.get(position)
         for order in range(max_order, 0, -1):
@@ -438,6 +466,7 @@ class OrderStackBPResult:
                         weights=tuple(weights),
                     )
                 )
+        self._candidate_set_cache[cache_key] = tuple(candidate_sets)
         return candidate_sets
 
 
@@ -631,6 +660,11 @@ class RegularOrderStackBPResult:
     backwards: dict[int, _RegularBackwardCache]
     policy: OrderPolicy
     constraints: PositionConstraints = field(default_factory=dict)
+    _candidate_set_cache: dict[tuple[int, Context, Hashable], tuple[OrderCandidateSet, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     @property
     def context_state_count(self) -> int:
@@ -726,6 +760,12 @@ class RegularOrderStackBPResult:
         history: Sequence[Symbol],
         acceptor_state: Hashable,
     ) -> list[OrderCandidateSet]:
+        history_key = tuple(history[-self.model.max_order :])
+        cache_key = (position, history_key, acceptor_state)
+        cached = self._candidate_set_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
         candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
         constraint = self.constraints.get(position)
@@ -761,7 +801,36 @@ class RegularOrderStackBPResult:
                         weights=tuple(weights),
                     )
                 )
+        self._candidate_set_cache[cache_key] = tuple(candidate_sets)
         return candidate_sets
+
+
+def _sample_from_weighted_edges(
+    edges: tuple[StackEdge, ...],
+    weights: tuple[float, ...],
+    cumulative_weights: tuple[float, ...] | None,
+    rng: random.Random,
+) -> StackEdge:
+    if not edges:
+        raise ValueError("cannot sample from an empty edge set")
+    if cumulative_weights is None:
+        cumulative_weights = _cumulative_weights(weights)
+    total = cumulative_weights[-1] if cumulative_weights else 0.0
+    if total <= 0.0:
+        raise ValueError("cannot sample from non-positive edge weights")
+    index = bisect.bisect_left(cumulative_weights, rng.random() * total)
+    if index >= len(edges):
+        index = len(edges) - 1
+    return edges[index]
+
+
+def _cumulative_weights(weights: tuple[float, ...]) -> tuple[float, ...]:
+    total = 0.0
+    cumulative: list[float] = []
+    for weight in weights:
+        total += weight
+        cumulative.append(total)
+    return tuple(cumulative)
 
 
 def run_order_stack_dfa_bp(
