@@ -426,11 +426,25 @@ class OrderStackBPResult:
         *,
         rng: random.Random | int | None = None,
     ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
-        sequence, trace = self.sample_with_trace(rng=rng)
-        return sequence, tuple(step.order for step in trace)
+        generator = _coerce_rng(rng)
+        history = list(self.prefix)
+        output: list[Symbol] = []
+        orders: list[int] = []
+
+        for position in range(self.length):
+            candidate_sets = self._candidate_sets(position, history)
+            choice = self.policy.choose(candidate_sets, generator)
+            if choice is None:
+                raise ValueError("No context path satisfies the constraints at any order.")
+            edge = choice.edge
+            output.append(edge.symbol)
+            orders.append(edge.order)
+            history.append(edge.symbol)
+
+        return tuple(output), tuple(orders)
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
-        return self.sample_with_trace(rng=rng)[0]
+        return self.sample_with_orders(rng=rng)[0]
 
     def sample_many_with_orders(
         self,
@@ -832,11 +846,33 @@ class RegularOrderStackBPResult:
         *,
         rng: random.Random | int | None = None,
     ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
-        sequence, trace = self.sample_with_trace(rng=rng)
-        return sequence, tuple(step.order for step in trace)
+        generator = _coerce_rng(rng)
+        history = list(self.prefix)
+        output: list[Symbol] = []
+        orders: list[int] = []
+        acceptor_state = self.start_acceptor_state
+
+        for position in range(self.length):
+            candidate_sets = self._candidate_sets(position, history, acceptor_state)
+            choice = self.policy.choose(candidate_sets, generator)
+            if choice is None:
+                raise ValueError("No order has positive constrained future mass.")
+            edge = choice.edge
+            cache = self.backwards[choice.candidate_set.order]
+            next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+            if next_acceptor_state is None:
+                raise RuntimeError("selected edge is not accepted by the DFA")
+            output.append(edge.symbol)
+            orders.append(edge.order)
+            history.append(edge.symbol)
+            acceptor_state = next_acceptor_state
+
+        if not self.acceptor.is_accepting(acceptor_state):
+            raise RuntimeError("order-stack policy ended in a non-accepting DFA state")
+        return tuple(output), tuple(orders)
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
-        return self.sample_with_trace(rng=rng)[0]
+        return self.sample_with_orders(rng=rng)[0]
 
     def sample_many_with_orders(
         self,

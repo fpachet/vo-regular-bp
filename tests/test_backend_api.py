@@ -139,6 +139,10 @@ def test_prepared_backend_samples_and_reports_diagnostics():
     assert isinstance(sample, GeneratedSequence)
     assert sample.sequence[-1] == 0
     assert len(sample.orders) == 2
+    traced_sequence, trace = backend.sample_with_trace(rng=random.Random(3))
+    ordered_sample = backend.sample_with_orders(rng=random.Random(3))
+    assert ordered_sample.sequence == traced_sequence
+    assert ordered_sample.orders == tuple(step.order for step in trace)
 
     samples = backend.sample_many_with_orders(5, rng=random.Random(1))
     assert all(isinstance(item, GeneratedSequence) for item in samples)
@@ -166,6 +170,10 @@ def test_prepared_backend_from_sequences_supports_regular_constraints():
     assert diagnostics.regular_product_states is not None
     assert diagnostics.regular_product_edges is not None
     assert diagnostics.success_mass == 1.0
+    traced_sequence, trace = backend.sample_with_trace(rng=random.Random(3))
+    ordered_sample = backend.sample_with_orders(rng=random.Random(3))
+    assert ordered_sample.sequence == traced_sequence
+    assert ordered_sample.orders == tuple(step.order for step in trace)
 
     samples = backend.sample_many(10, rng=random.Random(2))
     assert all(sample[-1] == 0 for sample in samples)
