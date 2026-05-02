@@ -68,3 +68,51 @@ The remaining runtime is dominated by the BP pass over the reachable product.
 Further gains would likely require structural changes such as integer-state
 interning or a time-aware final-symbol constraint that avoids multiplying the
 automaton by the positional DFA state space.
+
+## Positional-only Bach benchmark
+
+A later optimization targets the special case where the constraint is purely
+positional and can be applied as time-indexed edge masks instead of a regular
+acceptor product. The baseline path built the full backoff `ContextGraph` before
+running BP. The optimized path keeps exact counts and normalized suffix
+distributions, compiles outgoing context edges only on demand, and runs memoized
+backward DP over reachable `(time, context)` states.
+
+Command:
+
+```bash
+python scripts/eval_bach_positional_direct.py --compare-baseline --repeats 50 --samples 1
+```
+
+Configuration:
+
+- Bach Prelude in C, pitch-only
+- `K = 4`
+- `n = 32`
+- prefix `(60, 64, 67, 72, 76, 67)`
+- generated first and last pitch class `C`
+
+| Metric | Baseline | Optimized | Speedup |
+|---|---:|---:|---:|
+| Total time / run | `0.130022s` | `0.070966s` | `1.83x` |
+| Model/graph build | `0.060237s` | `0.001357s` | `44.39x` |
+| BP time | `0.069319s` | `0.069177s` | `1.00x` |
+| Sampling time / sequence | `0.000240s` | `0.000170s` | `1.41x` |
+
+Exactness checks are unchanged:
+
+- `Z = 0.102472718036` in both paths.
+- Reachable time-indexed states: `18452` in both paths.
+- Reachable edges: `444096` in both paths.
+- Constraint violations: `0`.
+
+For `100` samples per BP table, the same benchmark gives:
+
+| Metric | Baseline | Optimized | Speedup |
+|---|---:|---:|---:|
+| Total time / run | `0.143116s` | `0.082563s` | `1.73x` |
+| Sampling time / 100 sequences | `0.012954s` | `0.011406s` | `1.14x` |
+
+The main win is avoiding full graph materialization when only one prefix,
+horizon, and positional constraint set are needed. The BP frontier is the same;
+the optimization removes setup work without pruning or approximating paths.

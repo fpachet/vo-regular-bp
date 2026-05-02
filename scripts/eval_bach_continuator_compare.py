@@ -25,7 +25,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.eval_bach_positional_direct import run_direct_positional_bp  # noqa: E402
+from scripts.eval_bach_positional_direct import (  # noqa: E402
+    LazyBackoffContextModel,
+    run_direct_positional_bp,
+    run_memo_lazy_direct_positional_bp,
+)
 from scripts.eval_bach_scalability import DATA_PATH, load_bach_pitches, prefix_context  # noqa: E402
 from vo_regular_bp import ContextGraph  # noqa: E402
 
@@ -73,24 +77,49 @@ def run_direct(args: argparse.Namespace, seed: int) -> RunResult:
     parse_s = time.perf_counter() - t0
 
     t1 = time.perf_counter()
-    graph = ContextGraph.from_backoff_sequences(
-        [pitches],
-        max_order=args.max_order,
-        backoff_weight=args.backoff_weight,
-    )
+    if args.direct_engine == "baseline":
+        graph = ContextGraph.from_backoff_sequences(
+            [pitches],
+            max_order=args.max_order,
+            backoff_weight=args.backoff_weight,
+        )
+        model = None
+    else:
+        model = LazyBackoffContextModel.from_sequences(
+            [pitches],
+            max_order=args.max_order,
+            backoff_weight=args.backoff_weight,
+        )
+        graph = None
     build_s = time.perf_counter() - t1
 
     prefix = tuple(pitches[: args.prefix_length])
-    start_context = prefix_context(graph, prefix, args.max_order)
+    start_context = (
+        prefix_context(graph, prefix, args.max_order)
+        if graph is not None
+        else model.prefix_context(prefix)
+    )
     predicate = lambda pitch: int(pitch) % 12 == args.pitch_class
 
     t2 = time.perf_counter()
-    bp = run_direct_positional_bp(
-        graph,
-        length=args.horizon,
-        start_context=start_context,
-        constraints={0: predicate, args.horizon - 1: predicate},
-    )
+    if graph is not None:
+        bp = run_direct_positional_bp(
+            graph,
+            length=args.horizon,
+            start_context=start_context,
+            constraints={0: predicate, args.horizon - 1: predicate},
+        )
+        context_states = len(graph.states)
+        context_edges = graph.edge_count()
+    else:
+        bp = run_memo_lazy_direct_positional_bp(
+            model,
+            length=args.horizon,
+            start_context=start_context,
+            constraints={0: predicate, args.horizon - 1: predicate},
+        )
+        context_states = len(model.contexts)
+        context_edges = model.materialized_edge_count
     bp_s = time.perf_counter() - t2
 
     rng = random.Random(seed)
@@ -117,8 +146,8 @@ def run_direct(args: argparse.Namespace, seed: int) -> RunResult:
         failures=failures,
         sequence=sequence,
         partition_function=bp.partition_function,
-        context_states=len(graph.states),
-        context_edges=graph.edge_count(),
+        context_states=context_states,
+        context_edges=context_edges,
         reachable_states=bp.time_indexed_state_count,
         reachable_edges=bp.edge_count,
     )
@@ -329,6 +358,7 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--direct-engine", choices=("optimized", "baseline"), default="optimized")
     args = parser.parse_args()
 
     imports = import_continuator(args.continuator_root)
