@@ -248,12 +248,23 @@ def forbidden_substring_acceptor(
             prefixes.add(pattern[:prefix_len])
 
     max_prefix_len = max((len(prefix) for prefix in prefixes), default=0)
+    patterns_by_len: dict[int, set[tuple[Symbol, ...]]] = {}
+    for pattern in patterns:
+        patterns_by_len.setdefault(len(pattern), set()).add(pattern)
 
-    def completes_forbidden(candidate: tuple[Symbol, ...]) -> bool:
-        return any(
-            len(candidate) >= len(pattern) and candidate[-len(pattern) :] == pattern
-            for pattern in patterns
-        )
+    if len(patterns_by_len) == 1:
+        forbidden_len, forbidden_set = next(iter(patterns_by_len.items()))
+
+        def completes_forbidden(candidate: tuple[Symbol, ...]) -> bool:
+            return len(candidate) >= forbidden_len and candidate[-forbidden_len:] in forbidden_set
+
+    else:
+
+        def completes_forbidden(candidate: tuple[Symbol, ...]) -> bool:
+            return any(
+                len(candidate) >= pattern_len and candidate[-pattern_len:] in pattern_set
+                for pattern_len, pattern_set in patterns_by_len.items()
+            )
 
     def next_prefix(state: State, symbol: Symbol) -> State | None:
         if not isinstance(state, tuple):

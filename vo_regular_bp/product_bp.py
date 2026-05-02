@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import random
 from typing import Hashable, Iterable, Sequence
 
@@ -29,6 +29,11 @@ class ProductBPResult:
     layers: list[set[ProductState]]
     edges: list[dict[ProductState, tuple[ProductEdge, ...]]]
     betas: list[dict[ProductState, float]]
+    _transition_weight_cache: dict[tuple[int, ProductState], tuple[tuple[ProductEdge, float], ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     @property
     def partition_function(self) -> float:
@@ -55,13 +60,19 @@ class ProductBPResult:
 
         if time < 0 or time >= self.length:
             raise ValueError("time is outside the BP horizon")
+        cache_key = (time, state)
+        if cache_key in self._transition_weight_cache:
+            return self._transition_weight_cache[cache_key]
+
         beta_next = self.betas[time + 1]
         weighted = []
         for edge in self.edges[time].get(state, ()):
             weight = edge.probability * beta_next.get(edge.next_state, 0.0)
             if weight > 0.0:
                 weighted.append((edge, weight))
-        return tuple(weighted)
+        result = tuple(weighted)
+        self._transition_weight_cache[cache_key] = result
+        return result
 
     def _sample_edge(self, time: int, state: ProductState, generator: random.Random) -> ProductEdge:
         weighted = self.transition_weights(time, state)

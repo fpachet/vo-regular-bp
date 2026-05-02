@@ -27,6 +27,9 @@ from vo_regular_bp import (  # noqa: E402
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "bach_prelude_c_major_pitches.txt"
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "outputs" / "bach_scalability.csv"
 
+GraphCache = dict[tuple[int, float], ContextGraph]
+ConstraintCache = dict[tuple[tuple[int, ...], int, int, int], tuple[DFA, object, int, int]]
+
 
 @dataclass(frozen=True)
 class BachConfig:
@@ -224,25 +227,51 @@ def run_configuration(
     prefix: Sequence[int],
     samples: int,
     seed: int,
+    graph_cache: GraphCache | None = None,
+    constraint_cache: ConstraintCache | None = None,
 ) -> BachResult:
-    t0 = time.perf_counter()
-    graph = ContextGraph.from_backoff_sequences(
-        [pitches],
-        max_order=config.max_order,
-        backoff_weight=config.backoff_weight,
-    )
-    context_build_s = time.perf_counter() - t0
+    graph_key = (config.max_order, config.backoff_weight)
+    if graph_cache is not None and graph_key in graph_cache:
+        graph = graph_cache[graph_key]
+        context_build_s = 0.0
+    else:
+        t0 = time.perf_counter()
+        graph = ContextGraph.from_backoff_sequences(
+            [pitches],
+            max_order=config.max_order,
+            backoff_weight=config.backoff_weight,
+        )
+        context_build_s = time.perf_counter() - t0
+        if graph_cache is not None:
+            graph_cache[graph_key] = graph
 
     alphabet = tuple(sorted(graph.alphabet))
     start_context = prefix_context(graph, prefix, config.max_order)
-    acceptor, start_acceptor_state, acceptor_states, acceptor_edges, acceptor_build_s = build_constraint_acceptor(
-        pitches,
+    constraint_key = (
         alphabet,
         config.horizon,
         config.forbidden_ngram,
         config.final_pitch_class,
-        prefix,
     )
+    if constraint_cache is not None and constraint_key in constraint_cache:
+        acceptor, start_acceptor_state, acceptor_states, acceptor_edges = constraint_cache[constraint_key]
+        acceptor_build_s = 0.0
+    else:
+        acceptor, start_acceptor_state, acceptor_states, acceptor_edges, acceptor_build_s = build_constraint_acceptor(
+            pitches,
+            alphabet,
+            config.horizon,
+            config.forbidden_ngram,
+            config.final_pitch_class,
+            prefix,
+        )
+        if constraint_cache is not None:
+            constraint_cache[constraint_key] = (
+                acceptor,
+                start_acceptor_state,
+                acceptor_states,
+                acceptor_edges,
+            )
 
     tracemalloc.start()
     t1 = time.perf_counter()
@@ -380,6 +409,8 @@ def main() -> None:
 
     rows: list[dict[str, object]] = []
     results: list[BachResult] = []
+    graph_cache: GraphCache = {}
+    constraint_cache: ConstraintCache = {}
     configs = [
         BachConfig(order, horizon, maxorder_gram, args.final_pitch_class, args.backoff_weight)
         for order in parse_ints(args.orders)
@@ -394,6 +425,8 @@ def main() -> None:
             prefix=prefix,
             samples=args.samples,
             seed=args.seed + index,
+            graph_cache=graph_cache,
+            constraint_cache=constraint_cache,
         )
         results.append(result)
         rows.append(result.row(len(pitches), len(set(pitches)), args.samples))
