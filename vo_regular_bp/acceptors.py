@@ -291,6 +291,108 @@ def meter_acceptor(
     )
 
 
+def cumulative_meter_acceptor(
+    length: int,
+    cost: Mapping[Symbol, int] | Callable[[Symbol], int],
+    predicate: Callable[[int, Symbol, int], bool] | None = None,
+    *,
+    alphabet: Iterable[Symbol] | None = None,
+    max_cost: int | None = None,
+    accept_costs: Iterable[int] | Callable[[int], bool] | None = None,
+    end_symbol: Symbol | None = None,
+    name: str = "cumulative_meter",
+) -> DFA:
+    """Accept strings satisfying a cumulative meter predicate.
+
+    This is the regular-constraint form of the paper-style meter predicate
+    ``pi(c, x, k)``: before emitting symbol ``x`` at 1-based position ``k``,
+    the DFA state stores the cumulative cost ``c`` of previous symbols. The
+    transition is accepted iff ``predicate(c, x, k)`` holds, then the symbol
+    cost is added to the state.
+
+    ``accept_costs`` can be used for final total-cost requirements. If
+    ``end_symbol`` is provided, once it appears, all later symbols must be the
+    same padding symbol. Passing ``max_cost`` bounds transitions and lets the
+    DFA expose an explicit finite state set.
+    """
+
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    if max_cost is not None and max_cost < 0:
+        raise ValueError("max_cost must be non-negative")
+
+    if callable(cost):
+        cost_of = cost
+    else:
+        cost_map = dict(cost)
+
+        def cost_of(symbol: Symbol) -> int:
+            return cost_map[symbol]
+
+    if accept_costs is None:
+        accepts_cost = lambda total: True
+    elif callable(accept_costs):
+        accepts_cost = accept_costs
+    else:
+        accepted_totals = frozenset(int(total) for total in accept_costs)
+        accepts_cost = lambda total: total in accepted_totals
+
+    def transition(state: State, symbol: Symbol) -> State | None:
+        if not (
+            isinstance(state, tuple)
+            and len(state) == 3
+            and isinstance(state[0], int)
+            and isinstance(state[1], int)
+            and isinstance(state[2], bool)
+        ):
+            raise TypeError("cumulative-meter states must be (position, total_cost, ended)")
+
+        position, total_cost, ended = state
+        if position >= length:
+            return None
+        if ended and symbol != end_symbol:
+            return None
+
+        symbol_cost = _nonnegative_int_cost(cost_of(symbol), symbol)
+        next_position = position + 1
+        next_total = total_cost + symbol_cost
+        if max_cost is not None and next_total > max_cost:
+            return None
+        if predicate is not None and not predicate(total_cost, symbol, next_position):
+            return None
+
+        next_ended = ended or (end_symbol is not None and symbol == end_symbol)
+        return (next_position, next_total, next_ended)
+
+    def accepting(state: State) -> bool:
+        return (
+            isinstance(state, tuple)
+            and len(state) == 3
+            and state[0] == length
+            and isinstance(state[1], int)
+            and bool(accepts_cost(state[1]))
+        )
+
+    states = None
+    if max_cost is not None:
+        ended_values = (False, True) if end_symbol is not None else (False,)
+        states = {
+            (position, total, ended)
+            for position in range(length + 1)
+            for total in range(max_cost + 1)
+            for ended in ended_values
+        }
+
+    return DFA(
+        start_state=(0, 0, False),
+        states=states,
+        alphabet=alphabet,
+        transition_func=transition,
+        accept_func=accepting,
+        name=name,
+    )
+
+
 def forbidden_substring_acceptor(
     forbidden_patterns: Iterable[Sequence[Symbol]],
     *,
@@ -464,3 +566,11 @@ def max_order_acceptor(
         for index in range(0, len(tokens) - window + 1):
             forbidden.add(tokens[index : index + window])
     return forbidden_substring_acceptor(forbidden, alphabet=alphabet, name=name)
+
+
+def _nonnegative_int_cost(value: int, symbol: Symbol) -> int:
+    if not isinstance(value, int):
+        raise TypeError(f"cost for symbol {symbol!r} must be an integer")
+    if value < 0:
+        raise ValueError(f"cost for symbol {symbol!r} must be non-negative")
+    return value

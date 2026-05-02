@@ -1,10 +1,13 @@
 from vo_regular_bp import (
+    ContextGraph,
     all_of,
+    cumulative_meter_acceptor,
     dense_forbidden_substring_acceptor,
     forbidden_substring_acceptor,
     max_order_acceptor,
     meter_acceptor,
     positional_acceptor,
+    run_bp,
 )
 
 
@@ -22,6 +25,35 @@ def test_meter_acceptor():
 
     assert acceptor.accepts(("A", "B", "C"))
     assert not acceptor.accepts(("A", "C", "B"))
+
+
+def test_cumulative_meter_acceptor_matches_running_example():
+    acceptor = _six_beat_meter_acceptor()
+
+    assert acceptor.accepts((1, 2, 3, 4, 2, 3, 2, 1) + (0,) * 10)
+    assert not acceptor.accepts((1, 2, 4, 3, 2, 3, 2, 1) + (0,) * 10)
+    assert not acceptor.accepts((1, 2, 3, 4, 3, 4, 2) + (0,) * 11)
+
+
+def test_cumulative_meter_acceptor_conditions_bp_samples():
+    graph = ContextGraph.from_probabilities(
+        {
+            (): {1: 1.0},
+            (0,): {0: 1.0},
+            (1,): {2: 0.8, 0: 0.2},
+            (2,): {1: 0.4, 3: 0.2, 4: 0.2, 0: 0.2},
+            (3,): {2: 0.4, 4: 0.4, 0: 0.2},
+            (4,): {2: 0.4, 3: 0.4, 0: 0.2},
+        },
+        max_order=1,
+    )
+    acceptor = _six_beat_meter_acceptor()
+
+    bp = run_bp(graph, acceptor, length=18)
+    samples = bp.sample_many(100, rng=123)
+
+    assert bp.partition_function > 0.0
+    assert all(acceptor.accepts(sample) for sample in samples)
 
 
 def test_forbidden_substring_acceptor():
@@ -71,3 +103,29 @@ def _tuples(alphabet, length):
         for prefix in _tuples(alphabet, length - 1)
         for symbol in alphabet
     ]
+
+
+def _six_beat_meter_acceptor():
+    length = 18
+    costs = {symbol: symbol for symbol in range(5)}
+
+    def predicate(total, symbol, _position):
+        symbol_cost = costs[symbol]
+        new_total = total + symbol_cost
+        if new_total > length:
+            return False
+        if symbol_cost == 0:
+            return True
+        if symbol_cost > 6:
+            return False
+        return total // 6 == (new_total - 1) // 6 or total % 6 == 0
+
+    return cumulative_meter_acceptor(
+        length,
+        costs,
+        predicate,
+        alphabet=range(5),
+        max_cost=length,
+        accept_costs={length},
+        end_symbol=0,
+    )
