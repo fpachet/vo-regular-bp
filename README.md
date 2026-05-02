@@ -260,6 +260,52 @@ print(generated.orders)
 
 See `examples/event_order_stack_backend.py` for a complete small example.
 
+### Continuator-Style Facade
+
+For projects that want a Continuator-shaped entry point, the dependency-free
+facade in `vo_regular_bp.continuator` uses event sequences, a prefix, a horizon,
+and constraints:
+
+```python
+from vo_regular_bp import (
+    combine_constraints,
+    duration_total_constraint,
+    final_pitch_class_constraint,
+    prepare_continuation_backend,
+)
+
+constraints = combine_constraints(
+    final_pitch_class_constraint(
+        0,
+        horizon=8,
+        symbol_to_pitch=lambda symbol: symbol[0],
+    ),
+    duration_total_constraint(
+        8,
+        horizon=8,
+        symbol_to_duration=lambda symbol: symbol[1],
+    ),
+)
+
+backend = prepare_continuation_backend(
+    [training_events],
+    prefix=prefix_events,
+    horizon=8,
+    max_order=4,
+    constraints=constraints,
+    event_to_symbol=lambda event: (event.pitch, event.duration),
+)
+
+generated = backend.sample_events_with_orders(rng=0)
+print(generated.events)
+print(backend.diagnostics.as_dict())
+```
+
+The facade defaults to `SingletonAvoidingBackoffPolicy`, matching the
+Continuator-style policy-backoff interpretation. Pass `policy=...` to use a
+different order-selection policy. See `examples/continuator_style_backend.py`
+for a complete dependency-free example.
+
 ## Brute Force and Metrics
 
 For small examples, the package includes exact enumeration helpers:
