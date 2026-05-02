@@ -25,16 +25,21 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.eval_bach_positional_direct import (  # noqa: E402
-    LazyBackoffContextModel,
-    run_direct_positional_bp,
-    run_memo_lazy_direct_positional_bp,
-)
+from scripts.eval_bach_positional_direct import run_direct_positional_bp  # noqa: E402
 from scripts.eval_bach_scalability import DATA_PATH, load_bach_pitches, prefix_context  # noqa: E402
-from vo_regular_bp import ContextGraph  # noqa: E402
+from vo_regular_bp import (  # noqa: E402
+    ContextGraph,
+    LazyBackoffContextModel,
+    OrderStackModel,
+    SingletonAvoidingBackoffPolicy,
+    run_order_stack_bp,
+    run_positional_bp,
+)
 
 
 DEFAULT_CONTINUATOR_ROOT = Path("/Users/francoispachet/IdeaProjects/continuator")
+ORDER_STACK_START = "<START>"
+ORDER_STACK_END = "<END>"
 
 
 @dataclass(frozen=True)
@@ -112,7 +117,7 @@ def run_direct(args: argparse.Namespace, seed: int) -> RunResult:
         context_states = len(graph.states)
         context_edges = graph.edge_count()
     else:
-        bp = run_memo_lazy_direct_positional_bp(
+        bp = run_positional_bp(
             model,
             length=args.horizon,
             start_context=start_context,
@@ -129,7 +134,7 @@ def run_direct(args: argparse.Namespace, seed: int) -> RunResult:
     t3 = time.perf_counter()
     try:
         for _ in range(args.samples):
-            sequence = tuple(int(pitch) for pitch in bp.sample(rng))
+            sequence = tuple(int(pitch) for pitch in bp.sample(rng=rng))
             violations += int(violates_pitch_class(sequence, args.pitch_class))
     except Exception:
         failures += 1
@@ -153,6 +158,68 @@ def run_direct(args: argparse.Namespace, seed: int) -> RunResult:
     )
 
 
+def run_order_stack(args: argparse.Namespace, seed: int) -> RunResult:
+    total_start = time.perf_counter()
+
+    t0 = time.perf_counter()
+    pitches = tuple(int(pitch) for pitch in load_bach_pitches(args.data))
+    parse_s = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    model = OrderStackModel.from_sequences(
+        [pitches],
+        max_order=args.max_order,
+        start_symbol=ORDER_STACK_START,
+        end_symbol=ORDER_STACK_END,
+    )
+    build_s = time.perf_counter() - t1
+
+    prefix = tuple(pitches[: args.prefix_length])
+    allowed_c = c_pitch_values(pitches, args.pitch_class)
+    constraints = {0: allowed_c, args.horizon - 1: allowed_c}
+
+    t2 = time.perf_counter()
+    bp = run_order_stack_bp(
+        model,
+        length=args.horizon,
+        prefix=prefix,
+        constraints=constraints,
+        policy=SingletonAvoidingBackoffPolicy(),
+    )
+    bp_s = time.perf_counter() - t2
+
+    rng = random.Random(seed)
+    sequence: tuple[int, ...] | None = None
+    order_sequence: tuple[int, ...] = ()
+    violations = 0
+    failures = 0
+    t3 = time.perf_counter()
+    try:
+        for _ in range(args.samples):
+            sequence, order_sequence = bp.sample_with_orders(rng=rng)
+            sequence = tuple(int(pitch) for pitch in sequence)
+            violations += int(violates_pitch_class(sequence, args.pitch_class))
+    except Exception:
+        failures += 1
+    sample_s = time.perf_counter() - t3
+
+    return RunResult(
+        method="vo_regular_bp_order_stack",
+        parse_s=parse_s,
+        build_s=build_s,
+        bp_s=bp_s,
+        sample_s=sample_s,
+        total_s=time.perf_counter() - total_start,
+        violations=violations,
+        failures=failures,
+        sequence=sequence,
+        order_sequence=order_sequence,
+        context_states=bp.context_state_count,
+        context_edges=bp.context_edge_count,
+        reachable_edges=bp.bp_edge_relaxation_upper_bound,
+    )
+
+
 def import_continuator(continuator_root: Path) -> tuple[Any, Any, Any, Any]:
     root = continuator_root.expanduser().resolve()
     if not root.exists():
@@ -173,7 +240,7 @@ def make_constraint_problem(ConstraintProblem: Any, *, length: int, allowed_valu
     return problem
 
 
-def run_classic(args: argparse.Namespace, seed: int, imports: tuple[Any, Any, Any]) -> RunResult:
+def run_classic(args: argparse.Namespace, seed: int, imports: tuple[Any, Any, Any, Any]) -> RunResult:
     Variable_order_Markov, _, ConstraintProblem, _ = imports
     total_start = time.perf_counter()
 
@@ -239,7 +306,7 @@ def run_classic(args: argparse.Namespace, seed: int, imports: tuple[Any, Any, An
     )
 
 
-def run_context_bp(args: argparse.Namespace, seed: int, imports: tuple[Any, Any, Any]) -> RunResult:
+def run_context_bp(args: argparse.Namespace, seed: int, imports: tuple[Any, Any, Any, Any]) -> RunResult:
     _, ContextBPModel, ConstraintProblem, SingletonAvoidingBackoffPolicy = imports
     total_start = time.perf_counter()
 
@@ -289,7 +356,7 @@ def run_context_bp(args: argparse.Namespace, seed: int, imports: tuple[Any, Any,
         violations += int(violates_pitch_class(sequence, args.pitch_class))
     sample_s = time.perf_counter() - t2
 
-    compiled = model.compile_graph(prefix=prefix, order=args.max_order)
+    compiled_graphs = [model.compile_graph(prefix=prefix, order=order) for order in range(1, args.max_order + 1)]
     return RunResult(
         method="continuator_context_bp",
         parse_s=parse_s,
@@ -301,8 +368,8 @@ def run_context_bp(args: argparse.Namespace, seed: int, imports: tuple[Any, Any,
         failures=failures,
         sequence=sequence,
         order_sequence=order_sequence,
-        context_states=len(compiled.contexts),
-        context_edges=sum(len(edges) for edges in compiled.outgoing),
+        context_states=sum(len(graph.contexts) for graph in compiled_graphs),
+        context_edges=sum(sum(len(edges) for edges in graph.outgoing) for graph in compiled_graphs),
     )
 
 
@@ -362,13 +429,13 @@ def main() -> None:
     args = parser.parse_args()
 
     imports = import_continuator(args.continuator_root)
-    runners = (run_direct, run_classic, run_context_bp)
+    runners = (run_direct, run_order_stack, run_classic, run_context_bp)
     grouped: dict[str, list[RunResult]] = {}
     for runner in runners:
         method_results = []
         for repeat in range(args.repeats):
             seed = args.seed + repeat
-            if runner is run_direct:
+            if runner in (run_direct, run_order_stack):
                 method_results.append(runner(args, seed))
             else:
                 method_results.append(runner(args, seed, imports))

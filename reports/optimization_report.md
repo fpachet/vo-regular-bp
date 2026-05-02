@@ -94,10 +94,10 @@ Configuration:
 
 | Metric | Baseline | Optimized | Speedup |
 |---|---:|---:|---:|
-| Total time / run | `0.130022s` | `0.070966s` | `1.83x` |
-| Model/graph build | `0.060237s` | `0.001357s` | `44.39x` |
-| BP time | `0.069319s` | `0.069177s` | `1.00x` |
-| Sampling time / sequence | `0.000240s` | `0.000170s` | `1.41x` |
+| Total time / run | `0.133772s` | `0.083307s` | `1.61x` |
+| Model/graph build | `0.060995s` | `0.001337s` | `45.62x` |
+| BP time | `0.072312s` | `0.081520s` | `0.89x` |
+| Sampling time / sequence | `0.000236s` | `0.000235s` | `1.00x` |
 
 Exactness checks are unchanged:
 
@@ -116,3 +116,36 @@ For `100` samples per BP table, the same benchmark gives:
 The main win is avoiding full graph materialization when only one prefix,
 horizon, and positional constraint set are needed. The BP frontier is the same;
 the optimization removes setup work without pruning or approximating paths.
+
+## Order-stack comparison backend
+
+The Continuator ContextBP engine is faster than explicit-backoff BP because it
+does not run BP on the dense explicit backoff-mixture graph. It keeps one sparse
+fixed-order graph per order and chooses among orders with a policy. To make this
+comparison explicit, `vo_regular_bp.order_stack_bp` implements the same style of
+backend separately from the paper's single-context-graph BP.
+
+This is intentionally a different model family:
+
+- `vo_regular_bp_direct` is exact BP for one explicit stochastic context graph.
+- `vo_regular_bp_order_stack` is exact backward messaging inside each fixed-order
+  graph plus policy-based order selection.
+
+Command:
+
+```bash
+python scripts/eval_bach_continuator_compare.py --repeats 50 --samples 1
+```
+
+| Method | Total mean | Context states | Context edges | Edge relax upper bound |
+|---|---:|---:|---:|---:|
+| `vo_regular_bp_direct` | `0.0823945s` | `657` | `16400` | `444096` |
+| `vo_regular_bp_order_stack` | `0.0113387s` | `1210` | `2102` | `67264` |
+| `continuator_classic` | `0.0056632s` | `661` | `991` | |
+| `continuator_context_bp` | `0.0211527s` | `1210` | `2102` | |
+
+The in-repository order-stack backend matches Continuator ContextBP's stack size
+for this setup and, with the same RNG seed, produces the same representative
+sample and order trace. This supports the diagnosis that the previous speed gap
+was mostly semantic/workload-related rather than evidence that the single-graph
+implementation was unusually inefficient.

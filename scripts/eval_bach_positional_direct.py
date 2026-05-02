@@ -8,7 +8,6 @@ constraints are applied as time-indexed masks on context-graph edges.
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 import random
@@ -20,112 +19,10 @@ from typing import Callable, Hashable, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.eval_bach_scalability import DATA_PATH, load_bach_pitches, prefix_context  # noqa: E402
-from vo_regular_bp import ContextGraph  # noqa: E402
+from vo_regular_bp import ContextGraph, LazyBackoffContextModel, run_positional_bp  # noqa: E402
 from vo_regular_bp.context import Context, Edge, Symbol  # noqa: E402
 
 PositionPredicate = Callable[[Symbol], bool]
-
-
-class LazyBackoffContextModel:
-    """Backoff continuation model with outgoing edges compiled on demand."""
-
-    def __init__(
-        self,
-        counts: dict[Context, Counter[Symbol]],
-        *,
-        max_order: int,
-        backoff_weight: float,
-        start_state: Sequence[Symbol] = (),
-    ) -> None:
-        if max_order < 0:
-            raise ValueError("max_order must be non-negative")
-        if not 0.0 <= backoff_weight <= 1.0:
-            raise ValueError("backoff_weight must be in [0, 1]")
-        self.counts = counts
-        self.max_order = int(max_order)
-        self.backoff_weight = float(backoff_weight)
-        self.start_state = tuple(start_state)
-        contexts = set(counts)
-        contexts.add(self.start_state)
-        self.contexts = frozenset(contexts)
-        self.alphabet = frozenset(symbol for counter in counts.values() for symbol in counter)
-        self.distributions = {
-            context: tuple((symbol, float(count) / total) for symbol, count in counter.items())
-            for context, counter in counts.items()
-            for total in (float(sum(counter.values())),)
-            if total > 0.0
-        }
-        self._outgoing_cache: dict[Context, tuple[Edge, ...]] = {}
-
-    @classmethod
-    def from_sequences(
-        cls,
-        sequences: Sequence[Sequence[Symbol]],
-        *,
-        max_order: int,
-        backoff_weight: float,
-        start_state: Sequence[Symbol] = (),
-    ) -> "LazyBackoffContextModel":
-        counts: dict[Context, Counter[Symbol]] = defaultdict(Counter)
-        for sequence in sequences:
-            tokens = tuple(sequence)
-            for index, symbol in enumerate(tokens):
-                order_limit = min(max_order, index)
-                for order in range(order_limit + 1):
-                    context = tokens[index - order : index] if order else ()
-                    counts[context][symbol] += 1
-        return cls(
-            dict(counts),
-            max_order=max_order,
-            backoff_weight=backoff_weight,
-            start_state=start_state,
-        )
-
-    def outgoing(self, context: Sequence[Symbol]) -> tuple[Edge, ...]:
-        state = tuple(context)
-        cached = self._outgoing_cache.get(state)
-        if cached is not None:
-            return cached
-
-        scores: dict[Symbol, float] = {}
-        context_order = len(state)
-        distributions = self.distributions
-        backoff_weight = self.backoff_weight
-        for order in range(context_order, -1, -1):
-            suffix = state[-order:] if order else ()
-            distribution = distributions.get(suffix)
-            if not distribution:
-                continue
-            weight = backoff_weight ** (context_order - order)
-            for symbol, probability in distribution:
-                scores[symbol] = scores.get(symbol, 0.0) + weight * probability
-
-        total_score = float(sum(scores.values()))
-        if total_score <= 0.0:
-            edges: tuple[Edge, ...] = ()
-        else:
-            edges = tuple(
-                Edge(
-                    symbol,
-                    score / total_score,
-                    ContextGraph._canon(state, symbol, self.contexts, self.max_order),
-                )
-                for symbol, score in scores.items()
-                if score > 0.0
-            )
-        self._outgoing_cache[state] = edges
-        return edges
-
-    def prefix_context(self, prefix: Sequence[Symbol]) -> Context:
-        for order in range(min(self.max_order, len(prefix)), -1, -1):
-            suffix = tuple(prefix[-order:]) if order else ()
-            if suffix in self.contexts:
-                return suffix
-        return self.start_state
-
-    @property
-    def materialized_edge_count(self) -> int:
-        return sum(len(edges) for edges in self._outgoing_cache.values())
 
 
 @dataclass
@@ -181,64 +78,6 @@ class DirectPositionalBPResult:
         return tuple(output)
 
 
-@dataclass
-class MemoDirectPositionalBPResult:
-    model: LazyBackoffContextModel
-    length: int
-    start_context: Context
-    constraints: dict[int, PositionPredicate]
-    betas: list[dict[Context, float]]
-    allowed_edge_counts: list[dict[Context, int]]
-
-    @property
-    def partition_function(self) -> float:
-        return self.betas[0].get(self.start_context, 0.0)
-
-    @property
-    def unique_state_count(self) -> int:
-        return len(set().union(*self.betas)) if self.betas else 0
-
-    @property
-    def time_indexed_state_count(self) -> int:
-        return sum(len(layer) for layer in self.betas)
-
-    @property
-    def edge_count(self) -> int:
-        return sum(sum(layer.values()) for layer in self.allowed_edge_counts)
-
-    def sample(self, rng: random.Random) -> tuple[Symbol, ...]:
-        if self.partition_function <= 0.0:
-            raise ValueError("cannot sample because the constrained partition function is zero")
-
-        context = self.start_context
-        output: list[Symbol] = []
-        for time in range(self.length):
-            predicate = self.constraints.get(time)
-            weighted = []
-            beta_next = self.betas[time + 1]
-            for edge in self.model.outgoing(context):
-                if predicate is not None and not predicate(edge.symbol):
-                    continue
-                weight = edge.probability * beta_next.get(edge.next_state, 0.0)
-                if weight > 0.0:
-                    weighted.append((edge.symbol, edge.next_state, weight))
-            total = sum(weight for _, _, weight in weighted)
-            if total <= 0.0:
-                raise RuntimeError("no positive continuation in BP table")
-            threshold = rng.random() * total
-            cumulative = 0.0
-            chosen_symbol, chosen_context, _ = weighted[-1]
-            for symbol, next_context, weight in weighted:
-                cumulative += weight
-                if threshold <= cumulative:
-                    chosen_symbol = symbol
-                    chosen_context = next_context
-                    break
-            output.append(chosen_symbol)
-            context = chosen_context
-        return tuple(output)
-
-
 def run_direct_positional_bp(
     graph: ContextGraph,
     *,
@@ -287,49 +126,6 @@ def run_direct_positional_bp(
     )
 
 
-def run_memo_lazy_direct_positional_bp(
-    model: LazyBackoffContextModel,
-    *,
-    length: int,
-    start_context: Sequence[Symbol],
-    constraints: dict[int, PositionPredicate],
-) -> MemoDirectPositionalBPResult:
-    context0 = tuple(start_context)
-    betas: list[dict[Context, float]] = [dict() for _ in range(length + 1)]
-    allowed_edge_counts: list[dict[Context, int]] = [dict() for _ in range(length)]
-
-    def beta(time_index: int, context: Context) -> float:
-        cached = betas[time_index].get(context)
-        if cached is not None:
-            return cached
-        if time_index == length:
-            betas[time_index][context] = 1.0
-            return 1.0
-
-        predicate = constraints.get(time_index)
-        total = 0.0
-        allowed_count = 0
-        for edge in model.outgoing(context):
-            if predicate is not None and not predicate(edge.symbol):
-                continue
-            allowed_count += 1
-            total += edge.probability * beta(time_index + 1, edge.next_state)
-
-        allowed_edge_counts[time_index][context] = allowed_count
-        betas[time_index][context] = total
-        return total
-
-    beta(0, context0)
-    return MemoDirectPositionalBPResult(
-        model=model,
-        length=length,
-        start_context=context0,
-        constraints=constraints,
-        betas=betas,
-        allowed_edge_counts=allowed_edge_counts,
-    )
-
-
 def timed_once_baseline(args: argparse.Namespace, seed: int) -> dict[str, float | int | tuple[Hashable, ...] | str]:
     total_start = time.perf_counter()
 
@@ -363,7 +159,7 @@ def timed_once_baseline(args: argparse.Namespace, seed: int) -> dict[str, float 
     violations = 0
     t3 = time.perf_counter()
     for _ in range(args.samples):
-        sample = bp.sample(rng)
+        sample = bp.sample(rng=rng)
         if not sample or sample[0] % 12 != args.pitch_class or sample[-1] % 12 != args.pitch_class:
             violations += 1
     sample_s = time.perf_counter() - t3
@@ -409,7 +205,7 @@ def timed_once_optimized(args: argparse.Namespace, seed: int) -> dict[str, float
     constraints = {0: is_pc_c, args.horizon - 1: is_pc_c}
 
     t2 = time.perf_counter()
-    bp = run_memo_lazy_direct_positional_bp(
+    bp = run_positional_bp(
         model,
         length=args.horizon,
         start_context=start_context,
@@ -421,7 +217,7 @@ def timed_once_optimized(args: argparse.Namespace, seed: int) -> dict[str, float
     violations = 0
     t3 = time.perf_counter()
     for _ in range(args.samples):
-        sample = bp.sample(rng)
+        sample = bp.sample(rng=rng)
         if not sample or sample[0] % 12 != args.pitch_class or sample[-1] % 12 != args.pitch_class:
             violations += 1
     sample_s = time.perf_counter() - t3

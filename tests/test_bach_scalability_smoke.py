@@ -2,11 +2,7 @@ import math
 import random
 import time
 
-from scripts.eval_bach_positional_direct import (
-    LazyBackoffContextModel,
-    run_direct_positional_bp,
-    run_memo_lazy_direct_positional_bp,
-)
+from scripts.eval_bach_positional_direct import run_direct_positional_bp
 from scripts.eval_bach_scalability import (
     BachConfig,
     accepts_from,
@@ -14,7 +10,14 @@ from scripts.eval_bach_scalability import (
     prefix_context,
     run_configuration,
 )
-from vo_regular_bp import ContextGraph
+from vo_regular_bp import (
+    ContextGraph,
+    LazyBackoffContextModel,
+    OrderStackModel,
+    SingletonAvoidingBackoffPolicy,
+    run_order_stack_bp,
+    run_positional_bp,
+)
 
 
 def test_bach_scalability_smoke():
@@ -75,7 +78,7 @@ def test_optimized_positional_bp_matches_full_graph_baseline():
         max_order=max_order,
         backoff_weight=backoff_weight,
     )
-    optimized = run_memo_lazy_direct_positional_bp(
+    optimized = run_positional_bp(
         model,
         length=horizon,
         start_context=model.prefix_context(prefix),
@@ -92,6 +95,35 @@ def test_optimized_positional_bp_matches_full_graph_baseline():
     assert optimized.edge_count == baseline.edge_count
 
     rng = random.Random(123)
-    samples = [optimized.sample(rng) for _ in range(20)]
+    samples = [optimized.sample(rng=rng) for _ in range(20)]
     assert all(sample[0] % 12 == pitch_class for sample in samples)
     assert all(sample[-1] % 12 == pitch_class for sample in samples)
+
+
+def test_order_stack_bp_records_orders_and_satisfies_positional_constraints():
+    pitches = load_bach_pitches()
+    max_order = 3
+    horizon = 16
+    pitch_class = 0
+    prefix = tuple(pitches[:6])
+    allowed_c = {pitch for pitch in pitches if pitch % 12 == pitch_class}
+
+    model = OrderStackModel.from_sequences([pitches], max_order=max_order)
+    result = run_order_stack_bp(
+        model,
+        length=horizon,
+        prefix=prefix,
+        constraints={0: allowed_c, horizon - 1: allowed_c},
+        policy=SingletonAvoidingBackoffPolicy(),
+    )
+
+    rng = random.Random(456)
+    samples_with_orders = [result.sample_with_orders(rng=rng) for _ in range(20)]
+    assert result.context_state_count > 0
+    assert result.context_edge_count > 0
+    for sample, orders in samples_with_orders:
+        assert len(sample) == horizon
+        assert len(orders) == horizon
+        assert sample[0] % 12 == pitch_class
+        assert sample[-1] % 12 == pitch_class
+        assert all(1 <= order <= max_order for order in orders)
