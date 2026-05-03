@@ -1,7 +1,9 @@
 # vo-regular-bp
 
-`vo-regular-bp` is a small Python library for exact constrained sampling from
-sparse variable-order Markov/context models under regular constraints.
+`vo-regular-bp` is a Python library for exact constrained generation from
+sparse variable-order context models, with support for positional masks, meter
+constraints, forbidden-substring constraints, and reusable order-stack
+backends.
 
 The core algorithm runs backward dynamic programming on the reachable product
 of a context graph and a deterministic acceptor. Sampling then chooses each next
