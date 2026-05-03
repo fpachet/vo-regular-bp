@@ -55,6 +55,19 @@ The optimized CSV is:
 outputs/virtual_product_orbits_2026_05_03_row_cache/virtual_product_orbit_diagnostics.csv
 ```
 
+The stricter exact row-signature diagnostic was then run:
+
+```bash
+python scripts/eval_virtual_product_orbits.py \
+  --output-dir outputs/virtual_product_orbits_2026_05_03_exact_signatures
+```
+
+That CSV is:
+
+```text
+outputs/virtual_product_orbits_2026_05_03_exact_signatures/virtual_product_orbit_diagnostics.csv
+```
+
 ## Setup
 
 - Corpus: Bach Prelude pitch-only sequence, 592 tokens
@@ -106,6 +119,42 @@ a visible part of runtime. For larger MAXORDER windows, the remaining cost is
 dominated by the exact beta recurrence over many time-dependent edge
 relaxations, so this cache alone does not realize the larger orbit reductions.
 
+## Exact Row-Signature Diagnostic
+
+The next question was whether we could safely quotient rows beyond actual
+`(context state, DFA state)` caching. The stricter diagnostic groups two rows
+only if the full row is identical after an integer shift:
+
+- canonical source context and DFA suffix;
+- every accepted emitted symbol;
+- successor context;
+- successor DFA suffix;
+- transition probability.
+
+This means finite transposition-support boundary effects and nonuniform
+continuation probabilities split into separate signatures.
+
+| copy n-gram | product rows | exact row signatures | exact row reduction | reusable row fraction | max row signature size | time-masked rows | time-masked signatures | time-masked row reduction |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 | 4693 | 3070 | 1.53x | 0.690 | 4 | 142501 | 12760 | 11.17x |
+| 6 | 7811 | 5123 | 1.52x | 0.686 | 4 | 199961 | 22137 | 9.03x |
+| 7 | 11432 | 7514 | 1.52x | 0.684 | 4 | 238962 | 32339 | 7.39x |
+| 8 | 15507 | 10219 | 1.52x | 0.681 | 4 | 257838 | 39600 | 6.51x |
+
+Interpretation:
+
+- A safe product-row quotient cache would reduce actual row construction by
+  only about `1.5x` in this finite-shift Bach setup. Since actual row
+  construction is already cached and is not the dominant cost, implementing a
+  second quotient row cache is unlikely to produce a large runtime win here.
+- Time-masked row signatures collapse much more strongly, but this does not by
+  itself justify caching beta sums. The backward value still depends on the
+  actual successor beta values at the next time. Absolute anchors break the
+  simple equivariance needed to reuse those sums safely.
+- Therefore the safe conclusion is to keep the actual-row cache and diagnostics,
+  but not to implement the deeper quotient recurrence yet for this finite
+  absolute-transposition experiment.
+
 Definitions:
 
 - `state orbits` canonicalize `(context state, DFA prefix state)` modulo a
@@ -141,6 +190,13 @@ rebuilding actual product rows. A fuller transformation-aware recurrence would
 also reuse shifted row families across product-state orbits when the declared
 augmentation/constraint pair guarantees exact equivariance, otherwise falling
 back to this actual-row cache.
+
+The exact row-signature diagnostic suggests that such a recurrence should be
+developed only under a stronger contract, for example a genuinely closed
+transposition action or constraints whose future masks are transformation-aware
+enough to make shifted beta sums provably identical. The current Bach setup
+uses a finite absolute shift set `-6..+5` plus absolute anchors, so the exact
+quotient opportunity is real but limited.
 
 ## Exactness Caveat
 

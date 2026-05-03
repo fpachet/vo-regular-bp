@@ -120,6 +120,58 @@ class RegularProductOrbitStats:
         }
 
 
+@dataclass(frozen=True)
+class RegularRowSignatureStats:
+    """Exact shifted-row reuse counts for already-expanded regular BP rows."""
+
+    product_rows: int
+    product_row_signatures: int
+    reusable_product_rows: int
+    max_product_row_signature_size: int
+    time_masked_rows: int
+    time_masked_row_signatures: int
+    reusable_time_masked_rows: int
+    max_time_masked_row_signature_size: int
+    time_masked_edges: int
+
+    @property
+    def product_row_reduction_factor(self) -> float:
+        return _ratio(self.product_rows, self.product_row_signatures)
+
+    @property
+    def reusable_product_row_fraction(self) -> float:
+        return _ratio(self.reusable_product_rows, self.product_rows)
+
+    @property
+    def time_masked_row_reduction_factor(self) -> float:
+        return _ratio(self.time_masked_rows, self.time_masked_row_signatures)
+
+    @property
+    def reusable_time_masked_row_fraction(self) -> float:
+        return _ratio(self.reusable_time_masked_rows, self.time_masked_rows)
+
+    def as_dict(self) -> dict[str, int | float]:
+        return {
+            "exact_product_rows": self.product_rows,
+            "exact_product_row_signatures": self.product_row_signatures,
+            "exact_product_row_reduction": self.product_row_reduction_factor,
+            "exact_reusable_product_rows": self.reusable_product_rows,
+            "exact_reusable_product_row_fraction": self.reusable_product_row_fraction,
+            "exact_max_product_row_signature_size": self.max_product_row_signature_size,
+            "exact_time_masked_rows": self.time_masked_rows,
+            "exact_time_masked_row_signatures": self.time_masked_row_signatures,
+            "exact_time_masked_row_reduction": self.time_masked_row_reduction_factor,
+            "exact_reusable_time_masked_rows": self.reusable_time_masked_rows,
+            "exact_reusable_time_masked_row_fraction": (
+                self.reusable_time_masked_row_fraction
+            ),
+            "exact_max_time_masked_row_signature_size": (
+                self.max_time_masked_row_signature_size
+            ),
+            "exact_time_masked_edges": self.time_masked_edges,
+        }
+
+
 def canonical_integer_shift_key(
     value: Any,
     *,
@@ -337,6 +389,80 @@ def regular_product_orbit_stats(
     )
 
 
+def regular_row_signature_stats(
+    result: RegularOrderStackBPResult,
+    *,
+    fixed_symbols: Iterable[Symbol] = (),
+) -> RegularRowSignatureStats:
+    """Count exact row-template reuse under integer-shift canonicalization.
+
+    Unlike the looser orbit edge counters, a row signature contains the
+    canonical source payload, every accepted symbol, successor context, successor
+    DFA payload, and transition probability. Finite-transform boundary effects
+    and nonuniform continuation probabilities therefore split into distinct
+    signatures instead of being merged.
+    """
+
+    fixed = frozenset(fixed_symbols)
+    result.start_order_masses()
+
+    acceptor_payload_cache: dict[Hashable, Hashable] = {}
+    product_row_counts: Counter[Hashable] = Counter()
+    time_masked_row_counts: Counter[Hashable] = Counter()
+    product_seen: set[tuple[int, int, Hashable]] = set()
+    time_masked_edges = 0
+
+    for order, cache in result.backwards.items():
+        graph = cache.graph
+        for time, graph_state, acceptor_state in cache.memo:
+            if time == result.length:
+                continue
+
+            product_key = (order, graph_state, acceptor_state)
+            if product_key not in product_seen:
+                product_seen.add(product_key)
+                signature, _edge_count = _regular_row_signature(
+                    result,
+                    order=order,
+                    graph_state=graph_state,
+                    acceptor_state=acceptor_state,
+                    constraint=None,
+                    acceptor_payload_cache=acceptor_payload_cache,
+                    fixed_symbols=fixed,
+                )
+                product_row_counts[signature] += 1
+
+            time_signature, edge_count = _regular_row_signature(
+                result,
+                order=order,
+                graph_state=graph_state,
+                acceptor_state=acceptor_state,
+                constraint=result.constraints.get(time),
+                acceptor_payload_cache=acceptor_payload_cache,
+                fixed_symbols=fixed,
+            )
+            time_masked_row_counts[time_signature] += 1
+            time_masked_edges += edge_count
+
+    if time_masked_edges != result.product_edge_count:
+        raise RuntimeError(
+            "row-signature edge scan did not match BP product-edge count: "
+            f"{time_masked_edges} != {result.product_edge_count}"
+        )
+
+    return RegularRowSignatureStats(
+        product_rows=len(product_seen),
+        product_row_signatures=len(product_row_counts),
+        reusable_product_rows=_reusable_count(product_row_counts),
+        max_product_row_signature_size=_max_count(product_row_counts),
+        time_masked_rows=sum(time_masked_row_counts.values()),
+        time_masked_row_signatures=len(time_masked_row_counts),
+        reusable_time_masked_rows=_reusable_count(time_masked_row_counts),
+        max_time_masked_row_signature_size=_max_count(time_masked_row_counts),
+        time_masked_edges=time_masked_edges,
+    )
+
+
 def _acceptor_state_payload(acceptor: Any, state: Hashable) -> Hashable:
     prefixes = getattr(acceptor, "prefixes", None)
     if prefixes is not None and isinstance(state, int) and 0 <= state < len(prefixes):
@@ -350,6 +476,61 @@ def _constraint_allows(constraint: PositionConstraint | None, symbol: Symbol) ->
     if callable(constraint):
         return bool(constraint(symbol))
     return symbol in constraint
+
+
+def _regular_row_signature(
+    result: RegularOrderStackBPResult,
+    *,
+    order: int,
+    graph_state: int,
+    acceptor_state: Hashable,
+    constraint: PositionConstraint | None,
+    acceptor_payload_cache: dict[Hashable, Hashable],
+    fixed_symbols: frozenset[Symbol],
+) -> tuple[Hashable, int]:
+    cache = result.backwards[order]
+    graph = cache.graph
+    context = graph.contexts[graph_state]
+    acceptor_payload = acceptor_payload_cache.get(acceptor_state)
+    if acceptor_payload is None:
+        acceptor_payload = _acceptor_state_payload(result.acceptor, acceptor_state)
+        acceptor_payload_cache[acceptor_state] = acceptor_payload
+
+    source_payload = (context, acceptor_payload)
+    reference = _first_shiftable_symbol(source_payload, fixed_symbols)
+    source_key = canonical_integer_shift_key(
+        source_payload,
+        fixed_symbols=fixed_symbols,
+        reference=reference,
+    )
+
+    transition_keys: list[Hashable] = []
+    edge_count = 0
+    for transition in cache.accepted_transitions(graph_state, acceptor_state):
+        edge = transition.edge
+        if not _constraint_allows(constraint, edge.symbol):
+            continue
+        next_acceptor_state = transition.next_acceptor_state
+        next_payload = acceptor_payload_cache.get(next_acceptor_state)
+        if next_payload is None:
+            next_payload = _acceptor_state_payload(result.acceptor, next_acceptor_state)
+            acceptor_payload_cache[next_acceptor_state] = next_payload
+        dst_context = graph.contexts[edge.dst]
+        transition_keys.append(
+            canonical_integer_shift_key(
+                (
+                    edge.symbol,
+                    dst_context,
+                    next_payload,
+                    edge.probability,
+                ),
+                fixed_symbols=fixed_symbols,
+                reference=reference,
+            )
+        )
+        edge_count += 1
+
+    return (order, source_key, tuple(sorted(transition_keys, key=repr))), edge_count
 
 
 def _canonicalize(value: Any, fixed_symbols: frozenset[Symbol], reference: int) -> Hashable:
@@ -379,6 +560,10 @@ def _is_shiftable_integer(value: Any, fixed_symbols: frozenset[Symbol]) -> bool:
 
 def _max_count(counter: Mapping[Hashable, int]) -> int:
     return max(counter.values(), default=0)
+
+
+def _reusable_count(counter: Mapping[Hashable, int]) -> int:
+    return sum(count for count in counter.values() if count > 1)
 
 
 def _ratio(numerator: int, denominator: int) -> float:

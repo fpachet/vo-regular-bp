@@ -148,6 +148,12 @@ def run_case(
             include_transition_row_shapes=include_row_shapes,
         )
     )
+    row_signature_stats, row_signature_s = timed(
+        lambda: vbp.regular_row_signature_stats(
+            bp,
+            fixed_symbols={START_SYMBOL},
+        )
+    )
 
     row: dict[str, object] = {
         "constraint_mode": constraint_mode,
@@ -164,6 +170,7 @@ def run_case(
         "success_mass": f"{bp.success_mass:.12g}",
         "bp_s": f"{bp_s:.6f}",
         "orbit_diagnostic_s": f"{orbit_s:.6f}",
+        "row_signature_diagnostic_s": f"{row_signature_s:.6f}",
         "transition_rows": bp_transition_row_count,
         "accepted_transitions_cached": bp_accepted_transition_count,
         "transition_row_cache_hits": bp_transition_row_cache_hits,
@@ -171,6 +178,7 @@ def run_case(
     }
     row.update(format_stats(pattern_stats.as_dict()))
     row.update(format_stats(orbit_stats.as_dict()))
+    row.update(format_stats(row_signature_stats.as_dict()))
     return row
 
 
@@ -245,6 +253,8 @@ def print_summary(row: dict[str, object]) -> None:
         f"edge_orbits={row['product_edge_orbits']}",
         f"edge_reduction={row['product_edge_reduction']}",
         f"transition_rows={row['transition_rows']}",
+        f"exact_row_reduction={row['exact_product_row_reduction']}",
+        f"exact_time_masked_row_reduction={row['exact_time_masked_row_reduction']}",
         f"prefix_state_reduction={row['dfa_prefix_state_reduction']}",
     )
 

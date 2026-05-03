@@ -56,3 +56,10 @@ def test_regular_product_orbit_stats_match_bp_edge_count():
     assert bp.regular_transition_row_count > 0
     assert bp.regular_accepted_transition_count > 0
     assert bp.regular_transition_row_cache_misses > 0
+
+    row_stats = vbp.regular_row_signature_stats(bp)
+
+    assert row_stats.product_rows == bp.regular_transition_row_count
+    assert row_stats.time_masked_edges == bp.product_edge_count
+    assert row_stats.product_row_signatures <= row_stats.product_rows
+    assert row_stats.time_masked_row_signatures <= row_stats.time_masked_rows
