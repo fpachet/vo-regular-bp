@@ -28,6 +28,15 @@ are kept separately under [`paper/variable_order_regular_bp/`](paper/variable_or
 Optimization status and future performance ideas are tracked in
 [`docs/optimization_roadmap.md`](docs/optimization_roadmap.md).
 
+## Optimization Status
+
+The library includes several exactness-preserving optimizations: positional
+constraints are kept as time masks instead of DFA product state, MAXORDER /
+forbidden-substring constraints use a dense DFA when possible, order-stack
+sampling caches feasible candidate sets, and non-trace sampling avoids trace
+object allocation. See [`docs/optimization_roadmap.md`](docs/optimization_roadmap.md)
+for measured results, discarded experiments, and future optimization options.
+
 ## Quick Start
 
 ```python
