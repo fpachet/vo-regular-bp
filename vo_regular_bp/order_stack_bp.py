@@ -279,6 +279,11 @@ class OrderStackModel:
             return (), None
         return tuple((symbol, float(count) / total) for symbol, count in counts.items()), len(suffix)
 
+    def iter_contexts(self, order: int) -> Iterable[Context]:
+        for context in self.counts:
+            if len(context) <= order:
+                yield context
+
     def compile_graph(self, order: int) -> "FixedOrderContextGraph":
         cached = self._graph_cache.get(order)
         if cached is not None:
@@ -315,13 +320,78 @@ class FixedOrderContextGraph:
             queue.append(state)
             return context_id
 
-        for context in model.counts:
-            if len(context) <= order:
+        iter_contexts = getattr(model, "iter_contexts", None)
+        if iter_contexts is None:
+            for context in model.counts:
+                if len(context) <= order:
+                    add_context(context)
+        else:
+            for context in iter_contexts(order):
                 add_context(context)
 
         while queue:
             context = queue.popleft()
             src = graph.context_to_id[context]
+            distribution, effective_order = model.continuation_distribution_with_order(
+                context,
+                max_order=order,
+            )
+            for symbol, probability in distribution:
+                dst_context = graph.next_context(context, symbol)
+                dst = add_context(dst_context)
+                graph.outgoing[src].append(
+                    StackEdge(
+                        src=src,
+                        dst=dst,
+                        symbol=symbol,
+                        probability=float(probability),
+                        order=effective_order or 0,
+                    )
+                )
+
+        return graph
+
+    @classmethod
+    def from_model_contexts(
+        cls,
+        model: OrderStackModel,
+        *,
+        order: int,
+        contexts: Iterable[Context],
+        expandable_contexts: Iterable[Context] | None = None,
+    ) -> "FixedOrderContextGraph":
+        """Build a graph over a caller-supplied finite context set."""
+
+        if order < 1 or order > model.max_order:
+            raise ValueError(f"order must be between 1 and {model.max_order}")
+
+        graph = cls(order)
+
+        def add_context(context: Iterable[Symbol] | Context) -> int:
+            state = graph.truncate_context(context)
+            found = graph.context_to_id.get(state)
+            if found is not None:
+                return found
+            context_id = len(graph.contexts)
+            graph.context_to_id[state] = context_id
+            graph.contexts.append(state)
+            graph.outgoing.append([])
+            return context_id
+
+        def sort_key(context: Context) -> tuple[int, str]:
+            return (len(context), repr(context))
+
+        context_set = {graph.truncate_context(context) for context in contexts}
+        expandable_set = (
+            context_set
+            if expandable_contexts is None
+            else {graph.truncate_context(context) for context in expandable_contexts}
+        )
+        for context in sorted(context_set, key=sort_key):
+            add_context(context)
+
+        for context in sorted(expandable_set, key=sort_key):
+            src = add_context(context)
             distribution, effective_order = model.continuation_distribution_with_order(
                 context,
                 max_order=order,
@@ -1050,7 +1120,11 @@ def _run_order_stack_regular_bp(
     _validate_constraint_positions(position_constraints, length)
     active_policy = policy or LongestFeasiblePolicy()
     acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
-    graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
+    compile_graphs = getattr(model, "compile_graphs_for_prefix", None)
+    if compile_graphs is None:
+        graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
+    else:
+        graphs = compile_graphs(prefix=prefix, length=length)
     backwards = {
         order: _RegularBackwardCache(graph, acceptor, length, constraints=position_constraints)
         for order, graph in graphs.items()

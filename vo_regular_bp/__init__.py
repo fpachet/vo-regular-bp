@@ -27,6 +27,13 @@ from .adapters import (
     infer_symbol_to_event,
     prepare_constrained_order_stack_from_events,
 )
+from .augmentation import (
+    SymbolTransform,
+    VirtualAugmentedOrderStackModel,
+    integer_shift_transform,
+    integer_shift_transforms,
+    materialize_transformed_sequences,
+)
 from .brute_force import (
     brute_force_distribution,
     brute_force_partition_function,
@@ -117,6 +124,12 @@ __all__ = [
     "run_order_stack_bp",
     "run_order_stack_dfa_bp",
     "run_order_stack_masked_dfa_bp",
+    # Virtual data augmentation.
+    "SymbolTransform",
+    "VirtualAugmentedOrderStackModel",
+    "integer_shift_transform",
+    "integer_shift_transforms",
+    "materialize_transformed_sequences",
     # Constraint specifications and builders.
     "CompiledConstraints",
     "ConstraintSet",

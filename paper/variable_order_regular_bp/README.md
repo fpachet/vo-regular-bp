@@ -12,6 +12,7 @@ python scripts/eval_tiny_exactness.py
 python scripts/eval_scalability.py --help
 python scripts/eval_bach_scalability.py --help
 python scripts/eval_neurips_ablation.py --help
+python scripts/eval_virtual_augmentation.py --help
 python scripts/eval_bach_continuator_compare.py --help
 python scripts/eval_bach_contextbp_final_compare.py --help
 python scripts/eval_bach_positional_direct.py --help

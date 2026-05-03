@@ -467,6 +467,39 @@ Recommendation:
 - defer until the pure-Python library API has been exercised in Continuator or
   another external project.
 
+### Virtual Data Augmentation
+
+Status: implemented as an investigation backend.
+
+Idea:
+
+- define a finite transformation family, such as integer pitch transpositions;
+- keep the generated symbol space absolute;
+- compute augmented continuation counts lazily by summing transformed preimages:
+
+```text
+C_aug(c -> y) = sum_g C_base(g^-1(c) -> g^-1(y))
+```
+
+This preserves the same branch-sharing behavior as explicit data augmentation.
+If an absolute context can be explained by multiple transformed copies, all
+matching continuation counts are accumulated exactly as if the transformed
+sequences had been materialized.
+
+First Bach 12-transposition measurement:
+
+| method | stored events | full graph states | BP graph states | product edges |
+|---|---:|---:|---:|---:|
+| original corpus | 592 | 3587 | 3587 | 82491 |
+| explicit 12-key augmentation | 7104 | 27371 | 27371 | 1968532 |
+| virtual 12-key augmentation | 592 | 27371 | 896 | 1968532 |
+
+The virtual backend matches explicit augmentation start masses and success mass
+on this setup. The current implementation reduces stored training data and
+regular-BP graph materialization, but it does not yet reduce product-edge
+expansions for the Bach MAXORDER query. Further gains would require combining
+virtual augmentation with a more compact MAXORDER/product representation.
+
 ## Priority Recommendation
 
 For the reusable library:

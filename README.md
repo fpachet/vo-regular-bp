@@ -29,6 +29,8 @@ Library-oriented integration notes are in
 are kept separately under [`paper/variable_order_regular_bp/`](paper/variable_order_regular_bp/).
 Optimization status and future performance ideas are tracked in
 [`docs/optimization_roadmap.md`](docs/optimization_roadmap.md).
+Virtual transformed-corpus augmentation is described in
+[`docs/virtual_data_augmentation.md`](docs/virtual_data_augmentation.md).
 
 ## Optimization Status
 
@@ -354,6 +356,7 @@ python scripts/eval_tiny_exactness.py
 python scripts/eval_scalability.py --help
 python scripts/eval_bach_scalability.py --help
 python scripts/eval_neurips_ablation.py --help
+python scripts/eval_virtual_augmentation.py --help
 python scripts/eval_bach_continuator_compare.py --help
 python scripts/eval_bach_positional_direct.py --help
 ```
