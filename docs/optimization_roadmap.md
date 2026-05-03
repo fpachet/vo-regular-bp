@@ -1,0 +1,507 @@
+# Optimization Roadmap
+
+This document collects the optimization ideas discussed for `vo_regular_bp`,
+including completed work, experiments that were rejected, small safe next steps,
+and larger architectural options.
+
+The main reference workload is the Bach Prelude pitch-only policy-stack setup:
+
+- training length: 592 pitch events
+- prefix: first 6 pitch events
+- horizon: 32
+- MAXORDER copied n-gram constraint: forbidden length 5
+- final pitch class: C
+- K = 1..6
+- policy: `LongestFeasiblePolicy`
+- samples: 100
+- execution: single-process CPU Python
+
+## Optimization Goals
+
+The hard constraints are:
+
+- preserve exact constraint semantics;
+- keep the generic DFA path available;
+- avoid heuristic pruning, beam search, or approximate filtering;
+- keep paper evaluation scripts available;
+- make the library useful for external projects, not only paper benchmarks.
+
+The two main performance regimes are different:
+
+- Paper BP timing cares mostly about the backward pass.
+- Library usage often prepares once and samples many continuations, so sampling
+  speed and reusable prepared objects matter a lot.
+
+## Current Measured Facts
+
+On the Bach K=6 setup, graph structure across the order stack has substantial
+duplicate storage:
+
+| metric | value |
+|---|---:|
+| fixed-order graph state records | 3587 |
+| unique context labels | 1400 |
+| duplicate state records | 2187 |
+| duplicate state share | 61.0% |
+| fixed-order graph edge records | 5246 |
+| unique exact transition labels | 3184 |
+| duplicate edge records | 2062 |
+| duplicate edge share | 39.3% |
+
+However, actual regular BP message states do not overlap exactly across orders
+on this benchmark:
+
+| metric | value |
+|---|---:|
+| sum of time-indexed product states | 22159 |
+| unique `(time, context, q)` labels across orders | 22159 |
+| exact shared time-product message states | 0 |
+
+This means simple cross-order memo reuse is unlikely to improve BP timing for
+the Bach benchmark, even though shared graph storage could reduce memory and
+preparation work.
+
+Approximate construction timings measured on the same setup:
+
+| operation | median time |
+|---|---:|
+| fresh model plus all K=1..6 graphs | 10.7 ms |
+| all K=1..6 graphs from a fresh model | 8.8 ms |
+| regular masked BP preparation, K=6 | about 21-22 ms |
+
+The current BP profile is dominated by `_RegularBackwardCache.beta`; dict memo
+lookup is a visible sub-cost. Current non-trace sampling after the fast path is
+about 0.107 ms per generated sequence at K=6.
+
+## Completed Optimizations
+
+### Split Positional Constraints From Regular DFA State
+
+Status: implemented.
+
+Final-C and other purely positional constraints are kept as time-indexed masks
+instead of being folded into the regular product acceptor. MAXORDER remains the
+regular automaton.
+
+Effect:
+
+- reduces regular state inflation for positional constraints;
+- preserves exact semantics;
+- improves the Bach MAXORDER + final-C setup because final-C is not part of the
+  DFA product state.
+
+This is now part of the high-level `ConstraintSet` compiler: positional
+constraints stay positional, while regular constraints are compiled to DFA
+acceptors.
+
+### Dense Forbidden-Substring / MAXORDER DFA
+
+Status: implemented.
+
+Forbidden substring constraints can compile to `DenseForbiddenSubstringDFA`.
+States are dense integers and transitions are available through
+`dense_transition_by_symbol`.
+
+Effect:
+
+- avoids tuple-state and generic transition construction inside the MAXORDER
+  acceptor;
+- keeps the exact forbidden-substring language;
+- benefits both paper MAXORDER experiments and library users with finite
+  alphabets.
+
+### Candidate-Set Cache During Sampling
+
+Status: implemented.
+
+`RegularOrderStackBPResult` caches feasible candidate sets keyed by position,
+recent history, and acceptor state.
+
+Effect:
+
+- substantially improves repeated sampling from one prepared backend;
+- preserves exact sampling semantics because cached candidate sets are derived
+  from the same beta tables;
+- most useful when drawing many samples from one backend.
+
+### Cumulative-Weight Sampling
+
+Status: implemented.
+
+Candidate sets store cumulative weights so repeated sampling avoids rebuilding
+cumulative totals.
+
+Effect:
+
+- reduces per-step sampling overhead;
+- exact distribution is unchanged.
+
+### Constraint-Check Hot-Loop Cleanup
+
+Status: implemented.
+
+The regular backward and sampling paths separate the common constraint cases:
+no positional constraint, callable constraint, and set-like constraint.
+
+Effect:
+
+- improved BP/backward timing by about 13-15% versus the previous library
+  commit in the Bach MAXORDER benchmark;
+- product state and edge counts were unchanged.
+
+### Non-Trace Sampling Fast Path
+
+Status: implemented.
+
+`sample()` and `sample_with_orders()` now generate directly instead of routing
+through `sample_with_trace()` and allocating an `OrderSampleStep` per emitted
+symbol.
+
+Measured effect:
+
+| K | baseline sample ms/seq | fast-path sample ms/seq | speedup |
+|---:|---:|---:|---:|
+| 1 | 0.1540 | 0.1140 | 1.35x |
+| 2 | 0.1263 | 0.0821 | 1.54x |
+| 3 | 0.1287 | 0.0837 | 1.54x |
+| 4 | 0.1339 | 0.0891 | 1.50x |
+| 5 | 0.1410 | 0.0979 | 1.44x |
+| 6 | 0.1575 | 0.1072 | 1.47x |
+
+BP timing is unchanged, as expected.
+
+## Tried And Rejected
+
+### Array-Backed Graph Edges
+
+Status: prototyped and not committed.
+
+Idea:
+
+- replace Python dataclass edge traversal with parallel arrays such as symbols,
+  destinations, probabilities, and orders.
+
+Result:
+
+- slower on the Bach MAXORDER benchmark in the tested form.
+
+Likely reason:
+
+- the hot loop still paid Python iteration and indexing costs, while losing some
+  locality and clarity from the existing object representation.
+
+Recommendation:
+
+- do not revisit as a local mechanical rewrite;
+- only revisit as part of a larger compiled product graph or optional
+  accelerated backend.
+
+### Dense Regular Backward Cache
+
+Status: prototyped and removed.
+
+Idea:
+
+- replace `(time, graph_state, acceptor_state)` tuple memo keys with dense
+  integer product keys;
+- use dense DFA transition tables more directly.
+
+Measured result:
+
+| variant | BP result |
+|---|---|
+| sparse iterative dense cache | about 0.74x versus current, slower |
+| encoded-key recursive dense cache | about 0.86x versus current, slower |
+
+Recommendation:
+
+- do not repeat this as a simple key-shape change;
+- any future BP backend should change the overall computation model, not just
+  the memo key representation.
+
+## Easy Safe Wins Still Available
+
+These are low-risk and mostly affect sampling, not BP/backward preparation.
+
+### Return Cached Candidate Sets Without Copying
+
+Current behavior stores cached candidate sets as tuples but returns
+`list(cached)`. If policies do not mutate candidate collections, the API can
+accept a sequence and avoid the copy.
+
+Expected gain:
+
+- sampling: roughly 2-8%;
+- BP: no change.
+
+Risk:
+
+- low, but requires checking custom `OrderPolicy` expectations.
+
+### Fast Path For `LongestFeasiblePolicy`
+
+The default policy often selects the first non-empty candidate set. The current
+generic policy path still creates `PolicyDecision` and `CandidateChoice`
+objects. Non-trace sampling only needs the selected edge and order.
+
+Expected gain:
+
+- sampling: roughly 5-15%;
+- BP: no change.
+
+Risk:
+
+- low if restricted to the exact built-in `LongestFeasiblePolicy`;
+- generic policies should keep the existing path.
+
+### Store Next Acceptor State In Candidate Sets
+
+Candidate construction already computes `next_acceptor_state` to test
+feasibility. Sampling recomputes it after an edge is selected. Storing the next
+state alongside the edge and weight avoids that duplicate transition lookup.
+
+Expected gain:
+
+- sampling: roughly 2-5%;
+- BP: no change.
+
+Risk:
+
+- low, but changes the internal candidate data shape.
+
+### Prefilter Non-Forbidden Outgoing Edges
+
+The code often checks `edge.symbol in forbidden_symbols` in hot loops. For
+models with explicit start/end sentinel symbols, prefiltered outgoing lists
+could avoid repeated branches.
+
+Expected gain:
+
+- tiny for the Bach setup;
+- potentially useful for libraries using sentinel symbols heavily.
+
+Risk:
+
+- low, but probably not worth doing before the above sampling wins.
+
+## Bigger Architectural Options
+
+### Compiled Sampling Tables
+
+Status: recommended next library optimization.
+
+Idea:
+
+- after BP, compile per-step/per-state candidate tables containing selected
+  order candidates, cumulative weights, next context, and next acceptor state;
+- sampling then becomes table lookup plus RNG.
+
+Expected gain:
+
+- sampling: about 1.3x-2.0x from the current implementation when drawing many
+  sequences from one prepared backend;
+- prepare time: slightly higher;
+- BP: unchanged.
+
+Best for:
+
+- reusable library use;
+- external projects that prepare once and sample many continuations;
+- Continuator integration.
+
+Risks:
+
+- memory growth if tables are compiled for many states that are never sampled;
+- should probably be optional or lazy.
+
+Verification:
+
+- same-seed equivalence against current `sample_with_orders()` for built-in
+  policies;
+- support equivalence and constraint satisfaction tests;
+- distribution checks on tiny enumerable examples.
+
+### Specialized MAXORDER Backend
+
+Status: plausible BP-focused project, not easy.
+
+Idea:
+
+- make forbidden copied n-grams a first-class backend instead of representing
+  it only as a generic DFA;
+- carry the rolling suffix state directly in the BP transition logic;
+- specialize transition lookup and accepting checks for fixed forbidden length.
+
+Expected gain:
+
+- BP/backward: possibly 1.10x-1.30x;
+- stretch goal: 1.40x if the specialization avoids enough dict and method-call
+  overhead;
+- sampling: little direct change.
+
+Best for:
+
+- paper BP-only CPU numbers;
+- users who rely heavily on MAXORDER-like constraints.
+
+Risks:
+
+- more backend complexity;
+- easy to accidentally change the exact forbidden-substring language;
+- the earlier dense-cache experiment shows that naive specialization can
+  regress.
+
+Verification:
+
+- exact distribution match against generic DFA/product path on tiny examples;
+- support match against brute force;
+- Bach benchmark product state/edge counts should remain semantically
+  consistent.
+
+### Iterative Sparse Product BP With Precompiled Product Graph
+
+Status: larger redesign.
+
+Idea:
+
+- build compact reachable product transitions once;
+- run backward messages iteratively over arrays/lists instead of recursive
+  dict memoization;
+- reuse the product graph for repeated sampling or repeated beta recomputation.
+
+Expected gain:
+
+- BP/backward: uncertain, maybe 1.15x-1.50x if implemented carefully;
+- repeated use: better if product graph is reused;
+- prepare time: may increase for one-shot runs.
+
+Best for:
+
+- a reusable library backend with diagnostics and repeated sampling;
+- optional high-performance path for dense finite alphabets.
+
+Risks:
+
+- more code and more memory;
+- product graph construction could dominate small problems;
+- needs careful benchmarking to avoid repeating the array-backed edge
+  regression.
+
+### Shared Order-Stack Graph / Suffix DAG
+
+Status: useful for memory and preparation, probably not BP-only speed.
+
+Idea:
+
+- represent all fixed-order contexts in one suffix-indexed structure;
+- expose order-specific views without duplicating lower-order context records;
+- possibly share exact transition records.
+
+Measured opportunity:
+
+- state records could drop from 3587 to at most 1400 in the Bach K=6 setup;
+- exact transition records could drop from 5246 to about 3184;
+- graph construction currently costs about 8.8 ms for all K=1..6 graphs.
+
+Expected gain:
+
+- memory/object count: meaningful;
+- public preparation time: maybe 10-15%;
+- BP/backward: near 0% for the Bach benchmark unless paired with a deeper
+  algorithmic redesign.
+
+Risk:
+
+- moderate implementation complexity;
+- can obscure the currently simple fixed-order graph semantics.
+
+Recommendation:
+
+- good library architecture project after external integration;
+- not the next paper BP optimization.
+
+### Cross-Order Message Reuse
+
+Status: not promising as a direct optimization for Bach MAXORDER.
+
+Idea:
+
+- reuse beta messages for contexts that appear in several order graphs.
+
+Measured issue:
+
+- exact `(time, context, DFA-state)` overlap across orders was zero in the Bach
+  K=6 run.
+
+Expected gain:
+
+- BP/backward: likely near 0% for this benchmark;
+- may help other corpora or policies, but should be measured first.
+
+Recommendation:
+
+- do not implement as a standalone optimization now.
+
+### Optional NumPy Or Numba Backend
+
+Status: possible future accelerator.
+
+Idea:
+
+- keep the pure-Python exact backend as default;
+- add an optional accelerated backend for dense integer symbols/states.
+
+Expected gain:
+
+- potentially the largest CPU gain;
+- could exceed 2x on larger dense workloads.
+
+Risks:
+
+- new dependency and packaging complexity;
+- harder install path for downstream projects;
+- less useful if workloads remain small and sparse.
+
+Recommendation:
+
+- defer until the pure-Python library API has been exercised in Continuator or
+  another external project.
+
+## Priority Recommendation
+
+For the reusable library:
+
+1. Implement compiled sampling tables, preferably lazy or optional.
+2. Add the remaining safe sampling wins around candidate-set copying,
+   `LongestFeasiblePolicy`, and next-acceptor-state reuse.
+3. Try the Continuator integration and let real usage guide API changes.
+4. Consider a shared suffix graph for memory and preparation cleanup.
+
+For paper BP-only performance:
+
+1. Do not focus on graph construction first.
+2. Consider a specialized MAXORDER backend, but treat it as an experiment with
+   strict exactness tests.
+3. Avoid simple dense-key rewrites unless a profile shows a new reason.
+
+For broad future performance:
+
+1. Design an iterative sparse product BP backend only if repeated prepared
+   use or larger corpora make the current recursive memoization inadequate.
+2. Consider optional compiled acceleration only after the library interface has
+   stabilized.
+
+## Required Validation For Any New Optimization
+
+Every optimization that can affect sampling or BP should include:
+
+- same success mass or partition mass as the generic path;
+- same support as the baseline on tiny enumerable examples;
+- same exact distribution on tiny examples, either against brute force or the
+  generic BP distribution;
+- generated samples satisfy all positional, regular, MAXORDER, and meter
+  constraints;
+- no changes to the target Bach paper setup unless explicitly requested;
+- `python -m pytest -q`;
+- benchmark rows with raw runs and medians when the change is performance
+  motivated.

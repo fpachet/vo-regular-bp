@@ -9,6 +9,7 @@ muddying the single-graph exact BP implementation.
 
 from __future__ import annotations
 
+import bisect
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -17,7 +18,7 @@ from typing import Hashable, Protocol
 
 from .acceptors import DFA
 from .context import Context, Symbol, _as_context
-from .positional_bp import PositionConstraint, PositionConstraints, _allows, _coerce_rng
+from .positional_bp import PositionConstraint, PositionConstraints, _coerce_rng
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,15 @@ class OrderCandidateSet:
     state: int
     edges: tuple[StackEdge, ...]
     weights: tuple[float, ...]
+    cumulative_weights: tuple[float, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if len(self.edges) != len(self.weights):
+            raise ValueError("edges and weights must have the same length")
+        if self.cumulative_weights is None:
+            object.__setattr__(self, "cumulative_weights", _cumulative_weights(self.weights))
+        elif len(self.cumulative_weights) != len(self.weights):
+            raise ValueError("cumulative_weights and weights must have the same length")
 
 
 @dataclass(frozen=True)
@@ -77,7 +87,12 @@ class LongestFeasiblePolicy:
         rng: random.Random,
     ) -> CandidateChoice | None:
         for candidate_set in candidate_sets:
-            edge = rng.choices(candidate_set.edges, weights=candidate_set.weights, k=1)[0]
+            edge = _sample_from_weighted_edges(
+                candidate_set.edges,
+                candidate_set.weights,
+                candidate_set.cumulative_weights,
+                rng,
+            )
             return CandidateChoice(
                 candidate_set,
                 edge,
@@ -127,6 +142,7 @@ class SingletonAvoidingBackoffPolicy:
         for candidate_set in candidate_sets:
             edges = candidate_set.edges
             weights = candidate_set.weights
+            cumulative_weights = candidate_set.cumulative_weights
 
             if (
                 self.suppress_skipped_symbol
@@ -145,6 +161,7 @@ class SingletonAvoidingBackoffPolicy:
                     suppressed = True
                 edges = tuple(edge for edge, _ in filtered)
                 weights = tuple(weight for _, weight in filtered)
+                cumulative_weights = None
 
             if len(edges) == 1 and candidate_set.order >= self.min_singleton_order:
                 if rng.random() > self.singleton_acceptance_probability(candidate_set.order):
@@ -153,7 +170,7 @@ class SingletonAvoidingBackoffPolicy:
                     continue
                 skipped_symbol = None
 
-            edge = rng.choices(edges, weights=weights, k=1)[0]
+            edge = _sample_from_weighted_edges(edges, weights, cumulative_weights, rng)
             return CandidateChoice(
                 candidate_set,
                 edge,
@@ -350,6 +367,11 @@ class OrderStackBPResult:
     graphs: dict[int, FixedOrderContextGraph]
     backwards: dict[int, list[list[float]]]
     policy: OrderPolicy
+    _candidate_set_cache: dict[tuple[int, Context], tuple[OrderCandidateSet, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     @property
     def context_state_count(self) -> int:
@@ -362,6 +384,20 @@ class OrderStackBPResult:
     @property
     def bp_edge_relaxation_upper_bound(self) -> int:
         return self.length * self.context_edge_count
+
+    @property
+    def success_mass(self) -> float:
+        return 1.0 if self._candidate_sets(0, self.prefix) else 0.0
+
+    def start_order_masses(self) -> tuple[tuple[int, float], ...]:
+        masses: list[tuple[int, float]] = []
+        max_order = min(self.model.max_order, len(self.prefix))
+        for order in range(1, max_order + 1):
+            graph = self.graphs[order]
+            state = graph.state_id(tuple(self.prefix[-order:]))
+            mass = self.backwards[order][0][state] if state is not None else 0.0
+            masses.append((order, mass))
+        return tuple(masses)
 
     def sample_with_trace(
         self,
@@ -390,11 +426,25 @@ class OrderStackBPResult:
         *,
         rng: random.Random | int | None = None,
     ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
-        sequence, trace = self.sample_with_trace(rng=rng)
-        return sequence, tuple(step.order for step in trace)
+        generator = _coerce_rng(rng)
+        history = list(self.prefix)
+        output: list[Symbol] = []
+        orders: list[int] = []
+
+        for position in range(self.length):
+            candidate_sets = self._candidate_sets(position, history)
+            choice = self.policy.choose(candidate_sets, generator)
+            if choice is None:
+                raise ValueError("No context path satisfies the constraints at any order.")
+            edge = choice.edge
+            output.append(edge.symbol)
+            orders.append(edge.order)
+            history.append(edge.symbol)
+
+        return tuple(output), tuple(orders)
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
-        return self.sample_with_trace(rng=rng)[0]
+        return self.sample_with_orders(rng=rng)[0]
 
     def sample_many_with_orders(
         self,
@@ -406,7 +456,13 @@ class OrderStackBPResult:
         return [self.sample_with_orders(rng=generator) for _ in range(count)]
 
     def _candidate_sets(self, position: int, history: Sequence[Symbol]) -> list[OrderCandidateSet]:
-        candidate_sets = []
+        history_key = tuple(history[-self.model.max_order :])
+        cache_key = (position, history_key)
+        cached = self._candidate_set_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+        candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
         constraint = self.constraints.get(position)
         for order in range(max_order, 0, -1):
@@ -418,16 +474,37 @@ class OrderStackBPResult:
             candidates = []
             weights = []
             beta_next = self.backwards[order][position + 1]
-            for edge in graph.outgoing[state]:
-                if edge.symbol in self.model.forbidden_symbols:
-                    continue
-                if not _allows(constraint, edge.symbol):
-                    continue
-                weight = edge.probability * beta_next[edge.dst]
-                if weight <= 0.0:
-                    continue
-                candidates.append(edge)
-                weights.append(weight)
+            if constraint is None:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    weight = edge.probability * beta_next[edge.dst]
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            elif callable(constraint):
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if not constraint(edge.symbol):
+                        continue
+                    weight = edge.probability * beta_next[edge.dst]
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            else:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if edge.symbol not in constraint:
+                        continue
+                    weight = edge.probability * beta_next[edge.dst]
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
             if candidates:
                 candidate_sets.append(
                     OrderCandidateSet(
@@ -438,6 +515,7 @@ class OrderStackBPResult:
                         weights=tuple(weights),
                     )
                 )
+        self._candidate_set_cache[cache_key] = tuple(candidate_sets)
         return candidate_sets
 
 
@@ -493,14 +571,32 @@ def _backward_messages(
         constraint = constraints.get(position)
         beta_next = backward[position + 1]
         beta = backward[position]
-        for state, edges in enumerate(graph.outgoing):
-            total = 0.0
-            for edge in edges:
-                if edge.symbol in forbidden_symbols:
-                    continue
-                if _allows(constraint, edge.symbol):
+        if constraint is None:
+            for state, edges in enumerate(graph.outgoing):
+                total = 0.0
+                for edge in edges:
+                    if edge.symbol in forbidden_symbols:
+                        continue
                     total += edge.probability * beta_next[edge.dst]
-            beta[state] = total
+                beta[state] = total
+        elif callable(constraint):
+            for state, edges in enumerate(graph.outgoing):
+                total = 0.0
+                for edge in edges:
+                    if edge.symbol in forbidden_symbols:
+                        continue
+                    if constraint(edge.symbol):
+                        total += edge.probability * beta_next[edge.dst]
+                beta[state] = total
+        else:
+            for state, edges in enumerate(graph.outgoing):
+                total = 0.0
+                for edge in edges:
+                    if edge.symbol in forbidden_symbols:
+                        continue
+                    if edge.symbol in constraint:
+                        total += edge.probability * beta_next[edge.dst]
+                beta[state] = total
     return backward
 
 
@@ -539,7 +635,7 @@ class _RegularBackwardCache:
     length: int
     constraints: PositionConstraints = field(default_factory=dict)
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
-    expanded_edges: dict[tuple[int, int, Hashable], int] = field(default_factory=dict)
+    expanded_edge_total: int = 0
     dense_transition_by_symbol: Mapping[Symbol, tuple[int, ...]] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -563,27 +659,67 @@ class _RegularBackwardCache:
         constraint = self.constraints.get(time)
         dense_transition_by_symbol = self.dense_transition_by_symbol
         if dense_transition_by_symbol is not None and isinstance(acceptor_state, int):
-            for edge in self.graph.outgoing[state]:
-                if not _allows(constraint, edge.symbol):
-                    continue
-                transitions = dense_transition_by_symbol.get(edge.symbol)
-                if transitions is None:
-                    continue
-                next_acceptor_state = transitions[acceptor_state]
-                if next_acceptor_state < 0:
-                    continue
-                edge_count += 1
-                total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            if constraint is None:
+                for edge in self.graph.outgoing[state]:
+                    transitions = dense_transition_by_symbol.get(edge.symbol)
+                    if transitions is None:
+                        continue
+                    next_acceptor_state = transitions[acceptor_state]
+                    if next_acceptor_state < 0:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            elif callable(constraint):
+                for edge in self.graph.outgoing[state]:
+                    if not constraint(edge.symbol):
+                        continue
+                    transitions = dense_transition_by_symbol.get(edge.symbol)
+                    if transitions is None:
+                        continue
+                    next_acceptor_state = transitions[acceptor_state]
+                    if next_acceptor_state < 0:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            else:
+                for edge in self.graph.outgoing[state]:
+                    if edge.symbol not in constraint:
+                        continue
+                    transitions = dense_transition_by_symbol.get(edge.symbol)
+                    if transitions is None:
+                        continue
+                    next_acceptor_state = transitions[acceptor_state]
+                    if next_acceptor_state < 0:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
         else:
-            for edge in self.graph.outgoing[state]:
-                if not _allows(constraint, edge.symbol):
-                    continue
-                next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
-                if next_acceptor_state is None:
-                    continue
-                edge_count += 1
-                total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
-        self.expanded_edges[key] = edge_count
+            if constraint is None:
+                for edge in self.graph.outgoing[state]:
+                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            elif callable(constraint):
+                for edge in self.graph.outgoing[state]:
+                    if not constraint(edge.symbol):
+                        continue
+                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            else:
+                for edge in self.graph.outgoing[state]:
+                    if edge.symbol not in constraint:
+                        continue
+                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    edge_count += 1
+                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+        self.expanded_edge_total += edge_count
         self.memo[key] = total
         return total
 
@@ -609,7 +745,7 @@ class _RegularBackwardCache:
 
     @property
     def product_edge_count(self) -> int:
-        return sum(self.expanded_edges.values())
+        return self.expanded_edge_total
 
 
 @dataclass
@@ -631,6 +767,11 @@ class RegularOrderStackBPResult:
     backwards: dict[int, _RegularBackwardCache]
     policy: OrderPolicy
     constraints: PositionConstraints = field(default_factory=dict)
+    _candidate_set_cache: dict[tuple[int, Context, Hashable], tuple[OrderCandidateSet, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     @property
     def context_state_count(self) -> int:
@@ -705,11 +846,33 @@ class RegularOrderStackBPResult:
         *,
         rng: random.Random | int | None = None,
     ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
-        sequence, trace = self.sample_with_trace(rng=rng)
-        return sequence, tuple(step.order for step in trace)
+        generator = _coerce_rng(rng)
+        history = list(self.prefix)
+        output: list[Symbol] = []
+        orders: list[int] = []
+        acceptor_state = self.start_acceptor_state
+
+        for position in range(self.length):
+            candidate_sets = self._candidate_sets(position, history, acceptor_state)
+            choice = self.policy.choose(candidate_sets, generator)
+            if choice is None:
+                raise ValueError("No order has positive constrained future mass.")
+            edge = choice.edge
+            cache = self.backwards[choice.candidate_set.order]
+            next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+            if next_acceptor_state is None:
+                raise RuntimeError("selected edge is not accepted by the DFA")
+            output.append(edge.symbol)
+            orders.append(edge.order)
+            history.append(edge.symbol)
+            acceptor_state = next_acceptor_state
+
+        if not self.acceptor.is_accepting(acceptor_state):
+            raise RuntimeError("order-stack policy ended in a non-accepting DFA state")
+        return tuple(output), tuple(orders)
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
-        return self.sample_with_trace(rng=rng)[0]
+        return self.sample_with_orders(rng=rng)[0]
 
     def sample_many_with_orders(
         self,
@@ -726,6 +889,12 @@ class RegularOrderStackBPResult:
         history: Sequence[Symbol],
         acceptor_state: Hashable,
     ) -> list[OrderCandidateSet]:
+        history_key = tuple(history[-self.model.max_order :])
+        cache_key = (position, history_key, acceptor_state)
+        cached = self._candidate_set_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
         candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
         constraint = self.constraints.get(position)
@@ -738,19 +907,46 @@ class RegularOrderStackBPResult:
             candidates: list[StackEdge] = []
             weights: list[float] = []
             cache = self.backwards[order]
-            for edge in graph.outgoing[state]:
-                if edge.symbol in self.model.forbidden_symbols:
-                    continue
-                if not _allows(constraint, edge.symbol):
-                    continue
-                next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
-                if next_acceptor_state is None:
-                    continue
-                weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
-                if weight <= 0.0:
-                    continue
-                candidates.append(edge)
-                weights.append(weight)
+            if constraint is None:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            elif callable(constraint):
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if not constraint(edge.symbol):
+                        continue
+                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
+            else:
+                for edge in graph.outgoing[state]:
+                    if edge.symbol in self.model.forbidden_symbols:
+                        continue
+                    if edge.symbol not in constraint:
+                        continue
+                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    if weight <= 0.0:
+                        continue
+                    candidates.append(edge)
+                    weights.append(weight)
             if candidates:
                 candidate_sets.append(
                     OrderCandidateSet(
@@ -761,7 +957,36 @@ class RegularOrderStackBPResult:
                         weights=tuple(weights),
                     )
                 )
+        self._candidate_set_cache[cache_key] = tuple(candidate_sets)
         return candidate_sets
+
+
+def _sample_from_weighted_edges(
+    edges: tuple[StackEdge, ...],
+    weights: tuple[float, ...],
+    cumulative_weights: tuple[float, ...] | None,
+    rng: random.Random,
+) -> StackEdge:
+    if not edges:
+        raise ValueError("cannot sample from an empty edge set")
+    if cumulative_weights is None:
+        cumulative_weights = _cumulative_weights(weights)
+    total = cumulative_weights[-1] if cumulative_weights else 0.0
+    if total <= 0.0:
+        raise ValueError("cannot sample from non-positive edge weights")
+    index = bisect.bisect_left(cumulative_weights, rng.random() * total)
+    if index >= len(edges):
+        index = len(edges) - 1
+    return edges[index]
+
+
+def _cumulative_weights(weights: tuple[float, ...]) -> tuple[float, ...]:
+    total = 0.0
+    cumulative: list[float] = []
+    for weight in weights:
+        total += weight
+        cumulative.append(total)
+    return tuple(cumulative)
 
 
 def run_order_stack_dfa_bp(

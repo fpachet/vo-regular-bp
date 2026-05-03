@@ -22,6 +22,21 @@ python -m pip install -e .
 python -m pytest -q
 ```
 
+Library-oriented integration notes are in
+[`docs/library_usage.md`](docs/library_usage.md). The paper evaluation scripts
+are kept separately under [`paper/variable_order_regular_bp/`](paper/variable_order_regular_bp/).
+Optimization status and future performance ideas are tracked in
+[`docs/optimization_roadmap.md`](docs/optimization_roadmap.md).
+
+## Optimization Status
+
+The library includes several exactness-preserving optimizations: positional
+constraints are kept as time masks instead of DFA product state, MAXORDER /
+forbidden-substring constraints use a dense DFA when possible, order-stack
+sampling caches feasible candidate sets, and non-trace sampling avoids trace
+object allocation. See [`docs/optimization_roadmap.md`](docs/optimization_roadmap.md)
+for measured results, discarded experiments, and future optimization options.
+
 ## Quick Start
 
 ```python
@@ -132,6 +147,184 @@ then an order policy such as `LongestFeasiblePolicy` or
 The main result object reports `success_mass`, order-specific start masses,
 samples, and optional order traces.
 
+### Public Constraint Backend
+
+`prepare_constrained_order_stack(...)` is the recommended library-facing entry
+point for order-stack generation. It accepts a model and a `ConstraintSet`,
+compiles positional constraints as time masks, compiles regular constraints as
+acceptors, runs the backend once, and returns a reusable sampler.
+
+```python
+from vo_regular_bp import (
+    ConstraintSet,
+    LongestFeasiblePolicy,
+    OrderStackModel,
+    prepare_constrained_order_stack,
+)
+
+sequence = (60, 64, 67, 72, 76, 67, 71, 72)
+model = OrderStackModel.from_sequences([sequence], max_order=2)
+final_c = {pitch for pitch in sequence if pitch % 12 == 0}
+
+backend = prepare_constrained_order_stack(
+    model,
+    ConstraintSet(positional={3: final_c}),
+    length=4,
+    prefix=sequence[:2],
+    policy=LongestFeasiblePolicy(),
+)
+
+generated = backend.sample_with_orders(rng=0)
+sample = generated.sequence
+orders = generated.orders
+assert sample[-1] % 12 == 0
+```
+
+For convenience, `prepare_constrained_order_stack_from_sequences(...)` builds
+the `OrderStackModel` and prepares the backend in one call. The returned
+`ConstrainedOrderStackBackend` exposes `sample(...)`, `sample_many(...)`,
+`sample_with_orders(...)`, `sample_many_with_orders(...)`, `sample_with_trace(...)`,
+and a stable `diagnostics` object with context/product sizes and success mass
+when a regular backend is used.
+
+`run_constrained_order_stack(...)` remains available when callers need the raw
+internal BP result object.
+
+`ConstraintSet` supports:
+
+- `positional`: per-time symbol masks or predicates.
+- `forbidden_substrings`: exact forbidden substring / MAXORDER constraints,
+  compiled to a dense DFA when possible.
+- `regular_acceptors`: caller-supplied `DFA` instances.
+- `meter`: a `MeterConstraint` for finite per-symbol meter/class patterns.
+- `cumulative_meter`: a `CumulativeMeterConstraint` for duration/cost
+  accumulation, bar-boundary predicates, final total cost, and optional padding
+  symbols.
+
+The core API is intentionally not Continuator-specific; adapters for other
+projects can map their own event objects to symbols, meter classes, costs, or
+regular acceptors.
+
+All high-level constraints are over the generated suffix. Positional indices are
+zero-based within the generated sequence, not within the training corpus and not
+within `prefix + generated`.
+
+### Constraint Builders
+
+Common constraints can be built and combined without manually constructing
+`ConstraintSet` objects:
+
+```python
+from vo_regular_bp import (
+    combine_constraints,
+    final_pitch_class,
+    avoid_copied_ngrams,
+)
+
+constraints = combine_constraints(
+    final_pitch_class(0, length=32),
+    avoid_copied_ngrams(reference_pitches, 5),
+)
+```
+
+Builder helpers include:
+
+- `at_position(...)`
+- `final_symbol(...)` and `final_symbols(...)`
+- `final_pitch_class(...)`
+- `avoid_copied_ngrams(...)`
+- `meter_pattern(...)`
+- `cumulative_meter(...)`
+- `combine_constraints(...)`
+
+### Event Adapters
+
+External projects can keep rich event objects at their boundary and encode them
+as hashable symbols for the backend:
+
+```python
+from dataclasses import dataclass
+from vo_regular_bp import (
+    EventCodec,
+    combine_constraints,
+    final_pitch_class,
+    prepare_constrained_order_stack_from_events,
+)
+
+@dataclass(frozen=True)
+class Note:
+    pitch: int
+    duration: int
+
+codec = EventCodec(
+    event_to_symbol=lambda note: (note.pitch, note.duration),
+    symbol_to_event=lambda symbol: Note(symbol[0], symbol[1]),
+)
+
+backend = prepare_constrained_order_stack_from_events(
+    [training_notes],
+    combine_constraints(
+        final_pitch_class(0, length=8, symbol_to_pitch=lambda symbol: symbol[0]),
+    ),
+    codec=codec,
+    max_order=3,
+    length=8,
+    prefix=prefix_notes,
+)
+
+generated = backend.sample_events_with_orders(rng=0)
+print(generated.events)
+print(generated.orders)
+```
+
+See `examples/event_order_stack_backend.py` for a complete small example.
+
+### Continuator-Style Facade
+
+For projects that want a Continuator-shaped entry point, the dependency-free
+facade in `vo_regular_bp.continuator` uses event sequences, a prefix, a horizon,
+and constraints:
+
+```python
+from vo_regular_bp import (
+    combine_constraints,
+    duration_total_constraint,
+    final_pitch_class_constraint,
+    prepare_continuation_backend,
+)
+
+constraints = combine_constraints(
+    final_pitch_class_constraint(
+        0,
+        horizon=8,
+        symbol_to_pitch=lambda symbol: symbol[0],
+    ),
+    duration_total_constraint(
+        8,
+        horizon=8,
+        symbol_to_duration=lambda symbol: symbol[1],
+    ),
+)
+
+backend = prepare_continuation_backend(
+    [training_events],
+    prefix=prefix_events,
+    horizon=8,
+    max_order=4,
+    constraints=constraints,
+    event_to_symbol=lambda event: (event.pitch, event.duration),
+)
+
+generated = backend.sample_events_with_orders(rng=0)
+print(generated.events)
+print(backend.diagnostics.as_dict())
+```
+
+The facade defaults to `SingletonAvoidingBackoffPolicy`, matching the
+Continuator-style policy-backoff interpretation. Pass `policy=...` to use a
+different order-selection policy. See `examples/continuator_style_backend.py`
+for a complete dependency-free example.
+
 ## Brute Force and Metrics
 
 For small examples, the package includes exact enumeration helpers:
@@ -147,10 +340,12 @@ For empirical checks:
 
 These are intended for tests, toy examples, and exactness validation.
 
-## Experiments
+## Paper Experiments
 
-The repository includes scripts used to validate exactness and benchmark Bach
-Prelude examples:
+The reusable library lives in `vo_regular_bp/`.  Paper-specific validation and
+benchmark implementations are kept under `paper/variable_order_regular_bp/`.
+The top-level `scripts/` files remain as compatibility launchers, so existing
+commands still work:
 
 ```bash
 python scripts/eval_tiny_exactness.py
