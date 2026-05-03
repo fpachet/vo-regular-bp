@@ -25,6 +25,8 @@ python -m pytest -q
 Library-oriented integration notes are in
 [`docs/library_usage.md`](docs/library_usage.md). The paper evaluation scripts
 are kept separately under [`paper/variable_order_regular_bp/`](paper/variable_order_regular_bp/).
+Optimization status and future performance ideas are tracked in
+[`docs/optimization_roadmap.md`](docs/optimization_roadmap.md).
 
 ## Quick Start
 
