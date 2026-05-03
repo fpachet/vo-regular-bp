@@ -82,6 +82,13 @@ from .order_stack_bp import (
     run_order_stack_masked_dfa_bp,
     run_order_stack_bp,
 )
+from .orbit_diagnostics import (
+    ForbiddenPatternOrbitStats,
+    RegularProductOrbitStats,
+    canonical_integer_shift_key,
+    forbidden_pattern_orbit_stats,
+    regular_product_orbit_stats,
+)
 from .positional_bp import LazyBackoffContextModel, PositionalBPResult, run_positional_bp
 from .product_bp import ProductBPResult, run_bp, sample_exact
 
@@ -124,6 +131,12 @@ __all__ = [
     "run_order_stack_bp",
     "run_order_stack_dfa_bp",
     "run_order_stack_masked_dfa_bp",
+    # Transformation-orbit diagnostics.
+    "ForbiddenPatternOrbitStats",
+    "RegularProductOrbitStats",
+    "canonical_integer_shift_key",
+    "forbidden_pattern_orbit_stats",
+    "regular_product_orbit_stats",
     # Virtual data augmentation.
     "SymbolTransform",
     "VirtualAugmentedOrderStackModel",

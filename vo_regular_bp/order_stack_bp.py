@@ -31,6 +31,12 @@ class StackEdge:
 
 
 @dataclass(frozen=True)
+class _RegularTransition:
+    edge: StackEdge
+    next_acceptor_state: Hashable
+
+
+@dataclass(frozen=True)
 class OrderCandidateSet:
     order: int
     graph: "FixedOrderContextGraph"
@@ -705,7 +711,11 @@ class _RegularBackwardCache:
     length: int
     constraints: PositionConstraints = field(default_factory=dict)
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
+    transition_rows: dict[tuple[int, Hashable], tuple[_RegularTransition, ...]] = field(default_factory=dict)
     expanded_edge_total: int = 0
+    transition_row_cache_hits: int = 0
+    transition_row_cache_misses: int = 0
+    accepted_transition_total: int = 0
     dense_transition_by_symbol: Mapping[Symbol, tuple[int, ...]] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -727,71 +737,76 @@ class _RegularBackwardCache:
         total = 0.0
         edge_count = 0
         constraint = self.constraints.get(time)
-        dense_transition_by_symbol = self.dense_transition_by_symbol
-        if dense_transition_by_symbol is not None and isinstance(acceptor_state, int):
-            if constraint is None:
-                for edge in self.graph.outgoing[state]:
-                    transitions = dense_transition_by_symbol.get(edge.symbol)
-                    if transitions is None:
-                        continue
-                    next_acceptor_state = transitions[acceptor_state]
-                    if next_acceptor_state < 0:
-                        continue
-                    edge_count += 1
-                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
-            elif callable(constraint):
-                for edge in self.graph.outgoing[state]:
-                    if not constraint(edge.symbol):
-                        continue
-                    transitions = dense_transition_by_symbol.get(edge.symbol)
-                    if transitions is None:
-                        continue
-                    next_acceptor_state = transitions[acceptor_state]
-                    if next_acceptor_state < 0:
-                        continue
-                    edge_count += 1
-                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
-            else:
-                for edge in self.graph.outgoing[state]:
-                    if edge.symbol not in constraint:
-                        continue
-                    transitions = dense_transition_by_symbol.get(edge.symbol)
-                    if transitions is None:
-                        continue
-                    next_acceptor_state = transitions[acceptor_state]
-                    if next_acceptor_state < 0:
-                        continue
-                    edge_count += 1
-                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+        row = self.accepted_transitions(state, acceptor_state)
+        if constraint is None:
+            edge_count = len(row)
+            for transition in row:
+                edge = transition.edge
+                total += edge.probability * self.beta(
+                    time + 1,
+                    edge.dst,
+                    transition.next_acceptor_state,
+                )
+        elif callable(constraint):
+            for transition in row:
+                edge = transition.edge
+                if not constraint(edge.symbol):
+                    continue
+                edge_count += 1
+                total += edge.probability * self.beta(
+                    time + 1,
+                    edge.dst,
+                    transition.next_acceptor_state,
+                )
         else:
-            if constraint is None:
-                for edge in self.graph.outgoing[state]:
-                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
-                    if next_acceptor_state is None:
-                        continue
-                    edge_count += 1
-                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
-            elif callable(constraint):
-                for edge in self.graph.outgoing[state]:
-                    if not constraint(edge.symbol):
-                        continue
-                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
-                    if next_acceptor_state is None:
-                        continue
-                    edge_count += 1
-                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
-            else:
-                for edge in self.graph.outgoing[state]:
-                    if edge.symbol not in constraint:
-                        continue
-                    next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
-                    if next_acceptor_state is None:
-                        continue
-                    edge_count += 1
-                    total += edge.probability * self.beta(time + 1, edge.dst, next_acceptor_state)
+            for transition in row:
+                edge = transition.edge
+                if edge.symbol not in constraint:
+                    continue
+                edge_count += 1
+                total += edge.probability * self.beta(
+                    time + 1,
+                    edge.dst,
+                    transition.next_acceptor_state,
+                )
         self.expanded_edge_total += edge_count
         self.memo[key] = total
         return total
+
+    def accepted_transitions(
+        self,
+        state: int,
+        acceptor_state: Hashable,
+    ) -> tuple[_RegularTransition, ...]:
+        key = (state, acceptor_state)
+        cached = self.transition_rows.get(key)
+        if cached is not None:
+            self.transition_row_cache_hits += 1
+            return cached
+
+        self.transition_row_cache_misses += 1
+        dense_transition_by_symbol = self.dense_transition_by_symbol
+        row: list[_RegularTransition] = []
+        if dense_transition_by_symbol is not None and isinstance(acceptor_state, int):
+            for edge in self.graph.outgoing[state]:
+                transitions = dense_transition_by_symbol.get(edge.symbol)
+                if transitions is None:
+                    continue
+                next_state = transitions[acceptor_state]
+                if next_state < 0:
+                    continue
+                row.append(_RegularTransition(edge, next_state))
+        else:
+            for edge in self.graph.outgoing[state]:
+                next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
+                if next_acceptor_state is None:
+                    continue
+                row.append(_RegularTransition(edge, next_acceptor_state))
+
+        result = tuple(row)
+        self.accepted_transition_total += len(result)
+        self.transition_rows[key] = result
+        return result
 
     def next_acceptor_state(self, acceptor_state: Hashable, symbol: Symbol) -> Hashable | None:
         dense_transition_by_symbol = self.dense_transition_by_symbol
@@ -816,6 +831,10 @@ class _RegularBackwardCache:
     @property
     def product_edge_count(self) -> int:
         return self.expanded_edge_total
+
+    @property
+    def transition_row_count(self) -> int:
+        return len(self.transition_rows)
 
 
 @dataclass
@@ -862,6 +881,22 @@ class RegularOrderStackBPResult:
     @property
     def product_edge_count(self) -> int:
         return sum(cache.product_edge_count for cache in self.backwards.values())
+
+    @property
+    def regular_transition_row_count(self) -> int:
+        return sum(cache.transition_row_count for cache in self.backwards.values())
+
+    @property
+    def regular_transition_row_cache_hits(self) -> int:
+        return sum(cache.transition_row_cache_hits for cache in self.backwards.values())
+
+    @property
+    def regular_transition_row_cache_misses(self) -> int:
+        return sum(cache.transition_row_cache_misses for cache in self.backwards.values())
+
+    @property
+    def regular_accepted_transition_count(self) -> int:
+        return sum(cache.accepted_transition_total for cache in self.backwards.values())
 
     @property
     def success_mass(self) -> float:
@@ -977,42 +1012,49 @@ class RegularOrderStackBPResult:
             candidates: list[StackEdge] = []
             weights: list[float] = []
             cache = self.backwards[order]
+            row = cache.accepted_transitions(state, acceptor_state)
             if constraint is None:
-                for edge in graph.outgoing[state]:
+                for transition in row:
+                    edge = transition.edge
                     if edge.symbol in self.model.forbidden_symbols:
                         continue
-                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
-                    if next_acceptor_state is None:
-                        continue
-                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    weight = edge.probability * cache.beta(
+                        position + 1,
+                        edge.dst,
+                        transition.next_acceptor_state,
+                    )
                     if weight <= 0.0:
                         continue
                     candidates.append(edge)
                     weights.append(weight)
             elif callable(constraint):
-                for edge in graph.outgoing[state]:
+                for transition in row:
+                    edge = transition.edge
                     if edge.symbol in self.model.forbidden_symbols:
                         continue
                     if not constraint(edge.symbol):
                         continue
-                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
-                    if next_acceptor_state is None:
-                        continue
-                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    weight = edge.probability * cache.beta(
+                        position + 1,
+                        edge.dst,
+                        transition.next_acceptor_state,
+                    )
                     if weight <= 0.0:
                         continue
                     candidates.append(edge)
                     weights.append(weight)
             else:
-                for edge in graph.outgoing[state]:
+                for transition in row:
+                    edge = transition.edge
                     if edge.symbol in self.model.forbidden_symbols:
                         continue
                     if edge.symbol not in constraint:
                         continue
-                    next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
-                    if next_acceptor_state is None:
-                        continue
-                    weight = edge.probability * cache.beta(position + 1, edge.dst, next_acceptor_state)
+                    weight = edge.probability * cache.beta(
+                        position + 1,
+                        edge.dst,
+                        transition.next_acceptor_state,
+                    )
                     if weight <= 0.0:
                         continue
                     candidates.append(edge)
