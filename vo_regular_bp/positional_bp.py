@@ -22,6 +22,7 @@ from .product_bp import _sample_order
 
 PositionConstraint = Callable[[Symbol], bool] | Iterable[Symbol]
 PositionConstraints = Mapping[int, PositionConstraint]
+AllowedForbiddenSymbols = Mapping[int, Iterable[Symbol]]
 
 
 class ContextModel(Protocol):

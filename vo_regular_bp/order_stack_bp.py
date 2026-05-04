@@ -18,7 +18,12 @@ from typing import Hashable, Protocol
 
 from .acceptors import DFA
 from .context import Context, Symbol, _as_context
-from .positional_bp import PositionConstraint, PositionConstraints, _coerce_rng
+from .positional_bp import (
+    AllowedForbiddenSymbols,
+    PositionConstraint,
+    PositionConstraints,
+    _coerce_rng,
+)
 
 
 @dataclass(frozen=True)
@@ -440,6 +445,7 @@ class OrderStackBPResult:
     length: int
     prefix: Context
     constraints: PositionConstraints
+    allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]]
     graphs: dict[int, FixedOrderContextGraph]
     backwards: dict[int, list[list[float]]]
     policy: OrderPolicy
@@ -541,6 +547,7 @@ class OrderStackBPResult:
         candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
         constraint = self.constraints.get(position)
+        allowed_forbidden = self.allowed_forbidden_symbols.get(position, frozenset())
         for order in range(max_order, 0, -1):
             graph = self.graphs[order]
             context = tuple(history[-order:])
@@ -552,7 +559,7 @@ class OrderStackBPResult:
             beta_next = self.backwards[order][position + 1]
             if constraint is None:
                 for edge in graph.outgoing[state]:
-                    if edge.symbol in self.model.forbidden_symbols:
+                    if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     weight = edge.probability * beta_next[edge.dst]
                     if weight <= 0.0:
@@ -561,7 +568,7 @@ class OrderStackBPResult:
                     weights.append(weight)
             elif callable(constraint):
                 for edge in graph.outgoing[state]:
-                    if edge.symbol in self.model.forbidden_symbols:
+                    if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     if not constraint(edge.symbol):
                         continue
@@ -572,7 +579,7 @@ class OrderStackBPResult:
                     weights.append(weight)
             else:
                 for edge in graph.outgoing[state]:
-                    if edge.symbol in self.model.forbidden_symbols:
+                    if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     if edge.symbol not in constraint:
                         continue
@@ -601,6 +608,7 @@ def run_order_stack_bp(
     length: int,
     prefix: Sequence[Symbol],
     constraints: PositionConstraints | None = None,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
 ) -> OrderStackBPResult:
     if length < 0:
@@ -609,6 +617,10 @@ def run_order_stack_bp(
         raise ValueError("order-stack BP requires a non-empty prefix")
     position_constraints = dict(constraints or {})
     _validate_constraint_positions(position_constraints, length)
+    allowed_forbidden = _normalize_allowed_forbidden_symbols(
+        allowed_forbidden_symbols,
+        length,
+    )
     active_policy = policy or SingletonAvoidingBackoffPolicy()
 
     graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
@@ -618,6 +630,7 @@ def run_order_stack_bp(
             length=length,
             constraints=position_constraints,
             forbidden_symbols=model.forbidden_symbols,
+            allowed_forbidden_symbols=allowed_forbidden,
         )
         for order, graph in graphs.items()
     }
@@ -626,6 +639,7 @@ def run_order_stack_bp(
         length=length,
         prefix=tuple(prefix),
         constraints=position_constraints,
+        allowed_forbidden_symbols=allowed_forbidden,
         graphs=graphs,
         backwards=backwards,
         policy=active_policy,
@@ -638,6 +652,7 @@ def _backward_messages(
     length: int,
     constraints: Mapping[int, PositionConstraint],
     forbidden_symbols: frozenset[Symbol],
+    allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]],
 ) -> list[list[float]]:
     backward = [[0.0 for _ in graph.contexts] for _ in range(length + 1)]
     for state in range(len(graph.contexts)):
@@ -645,13 +660,14 @@ def _backward_messages(
 
     for position in range(length - 1, -1, -1):
         constraint = constraints.get(position)
+        allowed_forbidden = allowed_forbidden_symbols.get(position, frozenset())
         beta_next = backward[position + 1]
         beta = backward[position]
         if constraint is None:
             for state, edges in enumerate(graph.outgoing):
                 total = 0.0
                 for edge in edges:
-                    if edge.symbol in forbidden_symbols:
+                    if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
                         continue
                     total += edge.probability * beta_next[edge.dst]
                 beta[state] = total
@@ -659,7 +675,7 @@ def _backward_messages(
             for state, edges in enumerate(graph.outgoing):
                 total = 0.0
                 for edge in edges:
-                    if edge.symbol in forbidden_symbols:
+                    if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
                         continue
                     if constraint(edge.symbol):
                         total += edge.probability * beta_next[edge.dst]
@@ -668,7 +684,7 @@ def _backward_messages(
             for state, edges in enumerate(graph.outgoing):
                 total = 0.0
                 for edge in edges:
-                    if edge.symbol in forbidden_symbols:
+                    if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
                         continue
                     if edge.symbol in constraint:
                         total += edge.probability * beta_next[edge.dst]
@@ -704,12 +720,38 @@ def _validate_constraint_positions(
             raise IndexError(f"constraint position {position} is outside length {length}")
 
 
+def _normalize_allowed_forbidden_symbols(
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None,
+    length: int,
+) -> dict[int, frozenset[Symbol]]:
+    allowed: dict[int, frozenset[Symbol]] = {}
+    for position, symbols in (allowed_forbidden_symbols or {}).items():
+        if position < 0 or position >= length:
+            raise IndexError(
+                f"allowed forbidden-symbol position {position} is outside length {length}"
+            )
+        symbol_set = frozenset(symbols)
+        if symbol_set:
+            allowed[int(position)] = symbol_set
+    return allowed
+
+
+def _is_forbidden(
+    symbol: Symbol,
+    forbidden_symbols: frozenset[Symbol],
+    allowed_forbidden: frozenset[Symbol],
+) -> bool:
+    return symbol in forbidden_symbols and symbol not in allowed_forbidden
+
+
 @dataclass
 class _RegularBackwardCache:
     graph: FixedOrderContextGraph
     acceptor: DFA
     length: int
     constraints: PositionConstraints = field(default_factory=dict)
+    forbidden_symbols: frozenset[Symbol] = field(default_factory=frozenset)
+    allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]] = field(default_factory=dict)
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
     transition_rows: dict[tuple[int, Hashable], tuple[_RegularTransition, ...]] = field(default_factory=dict)
     expanded_edge_total: int = 0
@@ -737,11 +779,14 @@ class _RegularBackwardCache:
         total = 0.0
         edge_count = 0
         constraint = self.constraints.get(time)
+        allowed_forbidden = self.allowed_forbidden_symbols.get(time, frozenset())
         row = self.accepted_transitions(state, acceptor_state)
         if constraint is None:
-            edge_count = len(row)
             for transition in row:
                 edge = transition.edge
+                if _is_forbidden(edge.symbol, self.forbidden_symbols, allowed_forbidden):
+                    continue
+                edge_count += 1
                 total += edge.probability * self.beta(
                     time + 1,
                     edge.dst,
@@ -750,6 +795,8 @@ class _RegularBackwardCache:
         elif callable(constraint):
             for transition in row:
                 edge = transition.edge
+                if _is_forbidden(edge.symbol, self.forbidden_symbols, allowed_forbidden):
+                    continue
                 if not constraint(edge.symbol):
                     continue
                 edge_count += 1
@@ -761,6 +808,8 @@ class _RegularBackwardCache:
         else:
             for transition in row:
                 edge = transition.edge
+                if _is_forbidden(edge.symbol, self.forbidden_symbols, allowed_forbidden):
+                    continue
                 if edge.symbol not in constraint:
                     continue
                 edge_count += 1
@@ -856,6 +905,7 @@ class RegularOrderStackBPResult:
     backwards: dict[int, _RegularBackwardCache]
     policy: OrderPolicy
     constraints: PositionConstraints = field(default_factory=dict)
+    allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]] = field(default_factory=dict)
     _candidate_set_cache: dict[tuple[int, Context, Hashable], tuple[OrderCandidateSet, ...]] = field(
         default_factory=dict,
         init=False,
@@ -1003,6 +1053,7 @@ class RegularOrderStackBPResult:
         candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
         constraint = self.constraints.get(position)
+        allowed_forbidden = self.allowed_forbidden_symbols.get(position, frozenset())
         for order in range(max_order, 0, -1):
             graph = self.graphs[order]
             context = tuple(history[-order:])
@@ -1016,7 +1067,7 @@ class RegularOrderStackBPResult:
             if constraint is None:
                 for transition in row:
                     edge = transition.edge
-                    if edge.symbol in self.model.forbidden_symbols:
+                    if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     weight = edge.probability * cache.beta(
                         position + 1,
@@ -1030,7 +1081,7 @@ class RegularOrderStackBPResult:
             elif callable(constraint):
                 for transition in row:
                     edge = transition.edge
-                    if edge.symbol in self.model.forbidden_symbols:
+                    if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     if not constraint(edge.symbol):
                         continue
@@ -1046,7 +1097,7 @@ class RegularOrderStackBPResult:
             else:
                 for transition in row:
                     edge = transition.edge
-                    if edge.symbol in self.model.forbidden_symbols:
+                    if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     if edge.symbol not in constraint:
                         continue
@@ -1108,6 +1159,7 @@ def run_order_stack_dfa_bp(
     length: int,
     prefix: Sequence[Symbol],
     start_acceptor_state: Hashable | None = None,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
 ) -> RegularOrderStackBPResult:
     return _run_order_stack_regular_bp(
@@ -1117,6 +1169,7 @@ def run_order_stack_dfa_bp(
         prefix=prefix,
         start_acceptor_state=start_acceptor_state,
         constraints=None,
+        allowed_forbidden_symbols=allowed_forbidden_symbols,
         policy=policy,
     )
 
@@ -1129,6 +1182,7 @@ def run_order_stack_masked_dfa_bp(
     prefix: Sequence[Symbol],
     constraints: PositionConstraints | None = None,
     start_acceptor_state: Hashable | None = None,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
 ) -> RegularOrderStackBPResult:
     """Run regular order-stack BP with additional time-indexed symbol masks."""
@@ -1140,6 +1194,7 @@ def run_order_stack_masked_dfa_bp(
         prefix=prefix,
         start_acceptor_state=start_acceptor_state,
         constraints=constraints,
+        allowed_forbidden_symbols=allowed_forbidden_symbols,
         policy=policy,
     )
 
@@ -1152,6 +1207,7 @@ def _run_order_stack_regular_bp(
     prefix: Sequence[Symbol],
     start_acceptor_state: Hashable | None,
     constraints: PositionConstraints | None,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None,
     policy: OrderPolicy | None,
 ) -> RegularOrderStackBPResult:
     if length < 0:
@@ -1160,6 +1216,10 @@ def _run_order_stack_regular_bp(
         raise ValueError("order-stack BP requires a non-empty prefix")
     position_constraints = dict(constraints or {})
     _validate_constraint_positions(position_constraints, length)
+    allowed_forbidden = _normalize_allowed_forbidden_symbols(
+        allowed_forbidden_symbols,
+        length,
+    )
     active_policy = policy or LongestFeasiblePolicy()
     acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
     compile_graphs = getattr(model, "compile_graphs_for_prefix", None)
@@ -1168,7 +1228,14 @@ def _run_order_stack_regular_bp(
     else:
         graphs = compile_graphs(prefix=prefix, length=length)
     backwards = {
-        order: _RegularBackwardCache(graph, acceptor, length, constraints=position_constraints)
+        order: _RegularBackwardCache(
+            graph,
+            acceptor,
+            length,
+            constraints=position_constraints,
+            forbidden_symbols=model.forbidden_symbols,
+            allowed_forbidden_symbols=allowed_forbidden,
+        )
         for order, graph in graphs.items()
     }
     result = RegularOrderStackBPResult(
@@ -1181,6 +1248,7 @@ def _run_order_stack_regular_bp(
         backwards=backwards,
         policy=active_policy,
         constraints=position_constraints,
+        allowed_forbidden_symbols=allowed_forbidden,
     )
     result.start_order_masses()
     return result

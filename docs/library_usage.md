@@ -4,7 +4,12 @@
 package:
 
 ```python
-from vo_regular_bp import ConstraintSet, OrderStackModel, prepare_constrained_order_stack
+from vo_regular_bp import (
+    ConstraintSet,
+    OrderStackModel,
+    prepare_constrained_order_stack,
+    prepare_until_order_stack,
+)
 ```
 
 The public surface is project-agnostic. Symbols may be pitches, tokens, tuples,
@@ -19,6 +24,13 @@ returns a reusable `ConstrainedOrderStackBackend`.
 
 Use `prepare_constrained_order_stack_from_sequences(...)` when your training
 material is already a sequence of hashable symbols.
+
+Use `prepare_until_order_stack(...)` when you want a variable-length generated
+suffix that stops at the first generated symbol matching a stop constraint.
+The prefix is conditioning context only and is not included in the returned
+suffix. `stop` can be one symbol, an iterable/set of symbols, or a predicate
+`stop(symbol) -> bool`. `prepare_until_end_order_stack(..., end_symbol=...)`
+is the convenience form for learned END/sentinel stops.
 
 Use `prepare_constrained_order_stack_from_events(...)` when your project keeps
 rich event objects and needs explicit encode/decode functions.
@@ -55,6 +67,22 @@ such as strong/weak beats, stress classes, or symbolic duration classes.
 enforce a final accepted total, a maximum total, and optional predicates at each
 step.
 
+`prepare_until_order_stack(...)` composes the caller's `ConstraintSet` with
+first-hit positional masks for each candidate length: positions before the
+final one must not satisfy `stop`, and the final position must satisfy `stop`.
+Conflicting caller constraints simply make that length infeasible. The prepared
+backend exposes `sample(...)`, `sample_with_orders(...)`,
+`sample_with_trace(...)`, `sample_many(...)`, `diagnostics`, and
+`feasible_lengths`. Feasible lengths are weighted by the sum of positive
+start-order masses reported by their fixed-length backend; if a backend can
+only report success, that feasible length receives unit weight.
+
+Learned START/END sentinels remain forbidden in ordinary unconstrained
+fixed-length generation. First-hit generation allows a forbidden stop symbol
+only at the explicit final stop position, so
+`prepare_until_end_order_stack(...)` can emit END without changing the default
+fixed-length behavior.
+
 ## Exactness Notes
 
 `run_bp(...)` samples exactly from one probabilistic context graph conditioned
@@ -73,6 +101,8 @@ filtering.
 
 - `examples/symbolic_order_stack_backend.py`: plain symbolic sequence backend
   with final pitch-class and MAXORDER constraints.
+- `examples/until_order_stack_backend.py`: variable-length first-hit
+  continuation, including learned END/sentinel generation.
 - `examples/event_order_stack_backend.py`: rich event objects encoded through
   `EventCodec`, with pitch-class and meter constraints.
 - `examples/continuator_style_backend.py`: Continuator-shaped facade with final

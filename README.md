@@ -194,6 +194,38 @@ when a regular backend is used.
 `run_constrained_order_stack(...)` remains available when callers need the raw
 internal BP result object.
 
+For variable-length Continuator-style suffixes, use
+`prepare_until_order_stack(...)`. It prepares one fixed-length constrained
+backend for each feasible length in `[min_length, max_length]`, samples a
+length by the sum of its positive start-order masses, then samples the suffix
+from that length backend. If only a backend success indicator is available, the
+length receives unit weight. The returned suffix does not include the prefix:
+the prefix is conditioning context only.
+
+```python
+from vo_regular_bp import OrderStackModel, prepare_until_order_stack
+
+model = OrderStackModel.from_sequences([("A", "B", "C")], max_order=1)
+backend = prepare_until_order_stack(
+    model,
+    prefix=("A",),
+    stop="C",
+    min_length=1,
+    max_length=3,
+)
+
+suffix = backend.sample(rng=0)
+assert suffix == ("B", "C")
+```
+
+`stop` may be one symbol, an iterable/set of symbols, or a predicate
+`stop(symbol) -> bool`. The returned suffix includes the first generated stop
+symbol at the final position, and earlier positions are constrained not to
+satisfy `stop`. `prepare_until_end_order_stack(..., end_symbol=...)` is a
+convenience alias for learned END/sentinel stops. END remains forbidden in
+ordinary fixed-length sampling, but first-hit END generation explicitly allows
+the sentinel at the final stop position.
+
 `ConstraintSet` supports:
 
 - `positional`: per-time symbol masks or predicates.
