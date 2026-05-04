@@ -6,7 +6,13 @@ diagnostic helpers.  Lower-level modules remain importable for experiments, but
 external projects should prefer the names exported here.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _metadata_version
+
+try:
+    __version__ = _metadata_version("vo-regular-bp")
+except _PackageNotFoundError:
+    __version__ = "0+unknown"
 
 from .acceptors import (
     DFA,

@@ -19,8 +19,22 @@ constraints and Continuator-style order-stack backoff policies.
 The package has no declared runtime dependencies and requires Python 3.10 or
 newer.
 
+For use from another application, install directly from GitHub:
+
 ```bash
-python -m pip install -e .
+python -m pip install "vo-regular-bp @ git+https://github.com/fpachet/vo-regular-bp.git"
+```
+
+To pin an application to a stable revision, append a branch, tag, or commit:
+
+```bash
+python -m pip install "vo-regular-bp @ git+https://github.com/fpachet/vo-regular-bp.git@main"
+```
+
+For local development:
+
+```bash
+python -m pip install -e ".[test]"
 python -m pytest -q
 ```
 
@@ -31,6 +45,10 @@ Optimization status and future performance ideas are tracked in
 [`docs/optimization_roadmap.md`](docs/optimization_roadmap.md).
 Virtual transformed-corpus augmentation is described in
 [`docs/virtual_data_augmentation.md`](docs/virtual_data_augmentation.md).
+
+## License
+
+This project is released under the MIT License. See [`LICENSE`](LICENSE).
 
 ## Optimization Status
 

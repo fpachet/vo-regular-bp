@@ -4,7 +4,8 @@ import vo_regular_bp as vbp
 
 
 def test_public_exports_resolve():
-    assert vbp.__version__ == "0.1.0"
+    assert isinstance(vbp.__version__, str)
+    assert vbp.__version__
     missing = [name for name in vbp.__all__ if not hasattr(vbp, name)]
     assert not missing
     private = [
