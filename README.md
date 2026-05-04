@@ -271,6 +271,7 @@ Builder helpers include:
 - `avoid_copied_ngrams(...)`
 - `meter_pattern(...)`
 - `cumulative_meter(...)`
+- `padded_duration_total(...)`
 - `combine_constraints(...)`
 
 ### Event Adapters
@@ -360,6 +361,11 @@ The facade defaults to `SingletonAvoidingBackoffPolicy`, matching the
 Continuator-style policy-backoff interpretation. Pass `policy=...` to use a
 different order-selection policy. See `examples/continuator_style_backend.py`
 for a complete dependency-free example.
+
+For variable musical length in a fixed BP horizon, use
+`padded_duration_total_constraint(...)` with explicit zero-duration PAD symbols
+added to phrase/bar training sequences via `append_padding(...)`. See
+`examples/padded_duration_order_stack_backend.py`.
 
 ## Brute Force and Metrics
 

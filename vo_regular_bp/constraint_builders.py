@@ -156,6 +156,55 @@ def cumulative_meter(
     )
 
 
+def padded_duration_total(
+    total: int,
+    *,
+    length: int,
+    pad_symbol: Symbol,
+    symbol_to_duration: Mapping[Symbol, int] | Callable[[Symbol], int],
+    allow_zero_duration_events: bool = False,
+    name: str = "padded_duration_total",
+) -> ConstraintSet:
+    """Constrain generated duration with trailing PAD symbols.
+
+    The generated sequence has fixed length, but its musical prefix may be
+    shorter. The PAD symbol has duration zero, may appear only once ``total`` is
+    reached, and is absorbing once emitted.
+    """
+
+    if total < 0:
+        raise ValueError("total must be non-negative")
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    target = int(total)
+
+    def duration_of(symbol: Symbol) -> int:
+        if symbol == pad_symbol:
+            return 0
+        return _lookup(symbol_to_duration, symbol)
+
+    def predicate(current_total: int, symbol: Symbol, one_based_position: int) -> bool:
+        del one_based_position
+        if symbol == pad_symbol:
+            return current_total == target
+        duration = duration_of(symbol)
+        if duration == 0 and not allow_zero_duration_events:
+            return False
+        if current_total == target:
+            return False
+        return True
+
+    return cumulative_meter(
+        duration_of,
+        predicate,
+        length=length,
+        max_cost=target,
+        accept_costs={target},
+        end_symbol=pad_symbol,
+        name=name,
+    )
+
+
 def _intersect_position_constraints(
     left: PositionConstraint,
     right: PositionConstraint,

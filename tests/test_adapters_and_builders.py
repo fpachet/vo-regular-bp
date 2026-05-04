@@ -7,6 +7,7 @@ from vo_regular_bp import (
     EventCodec,
     GeneratedEvents,
     LongestFeasiblePolicy,
+    append_padding,
     avoid_copied_ngrams,
     combine_constraints,
     cumulative_meter,
@@ -14,6 +15,7 @@ from vo_regular_bp import (
     final_symbol,
     infer_symbol_to_event,
     meter_pattern,
+    padded_duration_total,
     prepare_constrained_order_stack,
     prepare_constrained_order_stack_from_events,
 )
@@ -131,3 +133,36 @@ def test_cumulative_meter_builder_accepts_exact_total_cost():
     samples = backend.sample_many(10, rng=random.Random(3))
     assert all(sample[-1] == 1 for sample in samples)
     assert all(sum(sample) == 4 for sample in samples)
+
+
+def test_padded_duration_builder_forces_absorbing_pad_after_total():
+    pad = "<PAD>"
+    sequence = ((60, 4), (62, 4), (64, 4), (65, 4))
+    model = OrderStackModel.from_sequences(
+        append_padding([sequence], pad_symbol=pad, pad_count=2),
+        max_order=1,
+    )
+
+    backend = prepare_constrained_order_stack(
+        model,
+        padded_duration_total(
+            12,
+            length=5,
+            pad_symbol=pad,
+            symbol_to_duration=lambda symbol: symbol[1],
+        ),
+        length=5,
+        prefix=((60, 4),),
+        policy=LongestFeasiblePolicy(),
+    )
+
+    sample = backend.sample(rng=random.Random(4))
+    first_pad = sample.index(pad)
+    assert sum(symbol[1] for symbol in sample if symbol != pad) == 12
+    assert all(symbol != pad for symbol in sample[:first_pad])
+    assert all(symbol == pad for symbol in sample[first_pad:])
+
+
+def test_append_padding_rejects_empty_padding():
+    with pytest.raises(ValueError, match="pad_count"):
+        append_padding([(1, 2, 3)], pad_symbol=0, pad_count=0)

@@ -20,6 +20,7 @@ from .constraint_builders import (
     cumulative_meter,
     final_pitch_class,
     meter_pattern,
+    padded_duration_total,
 )
 from .constraints import ConstraintSet
 from .context import Symbol
@@ -119,6 +120,27 @@ def duration_total_constraint(
         length=horizon,
         max_cost=total if max_total is None else max_total,
         accept_costs={total},
+        name=name,
+    )
+
+
+def padded_duration_total_constraint(
+    total: int,
+    *,
+    horizon: int,
+    pad_symbol: Symbol,
+    symbol_to_duration: Mapping[Symbol, int] | Callable[[Symbol], int],
+    allow_zero_duration_events: bool = False,
+    name: str = "padded_duration_total",
+) -> ConstraintSet:
+    """Constrain generated duration with trailing PAD symbols."""
+
+    return padded_duration_total(
+        total,
+        length=horizon,
+        pad_symbol=pad_symbol,
+        symbol_to_duration=symbol_to_duration,
+        allow_zero_duration_events=allow_zero_duration_events,
         name=name,
     )
 

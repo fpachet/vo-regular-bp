@@ -67,6 +67,77 @@ such as strong/weak beats, stress classes, or symbolic duration classes.
 enforce a final accepted total, a maximum total, and optional predicates at each
 step.
 
+For note symbols such as `(pitch, duration)`, an exact generated duration of
+32 over a fixed eight-note horizon can be expressed as:
+
+```python
+from vo_regular_bp import duration_total_constraint, prepare_continuation_backend
+
+backend = prepare_continuation_backend(
+    [training_notes],
+    prefix=prefix_notes,
+    horizon=8,
+    max_order=3,
+    constraints=duration_total_constraint(
+        32,
+        horizon=8,
+        symbol_to_duration=lambda symbol: symbol[1],
+    ),
+    event_to_symbol=lambda note: (note.pitch, note.duration),
+)
+
+generated = backend.sample_events_with_orders(rng=0)
+assert sum(note.duration for note in generated.events) == 32
+```
+
+This is a regular/cumulative constraint, so the backend uses the regular
+order-stack path. It remains exact: no beam search or rejection sampling is
+involved. See `examples/duration_total_order_stack_backend.py` for a complete
+small example.
+
+For variable musical length inside a fixed BP horizon, use explicit PAD
+symbols. PAD has zero duration, may appear only after the target duration has
+been reached, and is absorbing:
+
+```python
+from vo_regular_bp import (
+    append_padding,
+    padded_duration_total_constraint,
+    prepare_continuation_backend,
+)
+
+PAD = Note(-1, 0)
+
+def encode(note):
+    return "<PAD>" if note == PAD else (note.pitch, note.duration)
+
+backend = prepare_continuation_backend(
+    append_padding([training_phrase], pad_symbol=PAD, pad_count=max_order + 1),
+    prefix=prefix_notes,
+    horizon=16,
+    max_order=max_order,
+    constraints=padded_duration_total_constraint(
+        32,
+        horizon=16,
+        pad_symbol="<PAD>",
+        symbol_to_duration=lambda symbol: symbol[1],
+    ),
+    event_to_symbol=encode,
+)
+```
+
+Appending at least `max_order + 1` PAD events gives the order-stack model PAD
+self-loops at every fixed order. The cumulative constraint then guarantees that
+all generated real notes sum to the requested total and every following symbol
+is PAD. See `examples/padded_duration_order_stack_backend.py`.
+
+This is exact for the padded fixed-horizon model. Its probabilities include the
+model probability of entering PAD from the last real context. That is usually
+appropriate when PAD marks learned phrase/bar endings. If a project wants
+length-neutral probabilities after marginalizing over possible stop lengths, it
+should use a dedicated first-hit cumulative-duration backend rather than
+treating PAD as an ordinary learned symbol.
+
 `prepare_until_order_stack(...)` composes the caller's `ConstraintSet` with
 first-hit positional masks for each candidate length: positions before the
 final one must not satisfy `stop`, and the final position must satisfy `stop`.
@@ -107,6 +178,10 @@ filtering.
   `EventCodec`, with pitch-class and meter constraints.
 - `examples/continuator_style_backend.py`: Continuator-shaped facade with final
   pitch class, total duration, and meter-cycle constraints.
+- `examples/duration_total_order_stack_backend.py`: note events encoded as
+  `(pitch, duration)` symbols with exact total generated duration.
+- `examples/padded_duration_order_stack_backend.py`: variable musical length
+  in a fixed horizon using zero-duration absorbing PAD symbols.
 
 Paper experiments are kept separately under `paper/variable_order_regular_bp/`.
 Compatibility wrappers remain under `scripts/` for the existing evaluation

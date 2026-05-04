@@ -61,11 +61,13 @@ from .constraint_builders import (
     final_symbol,
     final_symbols,
     meter_pattern,
+    padded_duration_total,
 )
 from .continuator import (
     duration_total_constraint,
     final_pitch_class_constraint,
     meter_cycle_constraint,
+    padded_duration_total_constraint,
     prepare_continuation_backend,
 )
 from .constraints import (
@@ -96,6 +98,7 @@ from .orbit_diagnostics import (
     regular_product_orbit_stats,
     regular_row_signature_stats,
 )
+from .padding import append_padding
 from .positional_bp import LazyBackoffContextModel, PositionalBPResult, run_positional_bp
 from .product_bp import ProductBPResult, run_bp, sample_exact
 
@@ -157,6 +160,8 @@ __all__ = [
     "integer_shift_transform",
     "integer_shift_transforms",
     "materialize_transformed_sequences",
+    # Fixed-horizon padding helpers.
+    "append_padding",
     # Constraint specifications and builders.
     "CompiledConstraints",
     "ConstraintSet",
@@ -171,6 +176,7 @@ __all__ = [
     "final_symbol",
     "final_symbols",
     "meter_pattern",
+    "padded_duration_total",
     # Event and Continuator-style adapters.
     "EventCodec",
     "EventOrderStackBackend",
@@ -179,6 +185,7 @@ __all__ = [
     "final_pitch_class_constraint",
     "infer_symbol_to_event",
     "meter_cycle_constraint",
+    "padded_duration_total_constraint",
     "prepare_constrained_order_stack_from_events",
     "prepare_continuation_backend",
     # Analysis/test helpers that are useful for exactness checks.
