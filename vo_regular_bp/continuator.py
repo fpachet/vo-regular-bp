@@ -13,8 +13,9 @@ from typing import TypeVar
 from .adapters import (
     EventCodec,
     EventOrderStackBackend,
+    EventOrderStackPlan,
     infer_symbol_to_event as infer_symbol_decoder,
-    prepare_constrained_order_stack_from_events,
+    prepare_constrained_order_stack_plan_from_events,
 )
 from .constraint_builders import (
     cumulative_meter,
@@ -71,13 +72,58 @@ def prepare_continuation_backend(
     )
     active_policy = policy if policy is not None else SingletonAvoidingBackoffPolicy()
 
-    return prepare_constrained_order_stack_from_events(
+    plan = prepare_constrained_order_stack_plan_from_events(
         material,
         constraints,
         codec=codec,
         max_order=max_order,
         length=horizon,
-        prefix=prefix_tuple,
+        policy=active_policy,
+        start_event=start_event,
+        end_event=end_event,
+        alphabet=alphabet,
+        prefer_dense_forbidden=prefer_dense_forbidden,
+    )
+    return plan.for_prefix(prefix_tuple)
+
+
+def prepare_continuation_plan(
+    training_events: Iterable[Sequence[EventT]],
+    *,
+    horizon: int,
+    max_order: int,
+    constraints: ConstraintSet | None = None,
+    event_to_symbol: Callable[[EventT], Symbol] | None = None,
+    symbol_to_event: Mapping[Symbol, EventT] | Callable[[Symbol], EventT] | None = None,
+    infer_decoder: bool = True,
+    strict_decoder: bool = True,
+    policy: OrderPolicy | None = None,
+    start_event: EventT | None = None,
+    end_event: EventT | None = None,
+    alphabet: Iterable[Symbol] | None = None,
+    prefer_dense_forbidden: bool = True,
+) -> EventOrderStackPlan[EventT]:
+    """Prepare a reusable Continuator-shaped plan without binding a prefix."""
+
+    if horizon < 0:
+        raise ValueError("horizon must be non-negative")
+    material = tuple(tuple(sequence) for sequence in training_events)
+    codec = _build_codec(
+        material,
+        (),
+        event_to_symbol=event_to_symbol,
+        symbol_to_event=symbol_to_event,
+        infer_decoder=infer_decoder,
+        strict_decoder=strict_decoder,
+    )
+    active_policy = policy if policy is not None else SingletonAvoidingBackoffPolicy()
+
+    return prepare_constrained_order_stack_plan_from_events(
+        material,
+        constraints,
+        codec=codec,
+        max_order=max_order,
+        length=horizon,
         policy=active_policy,
         start_event=start_event,
         end_event=end_event,

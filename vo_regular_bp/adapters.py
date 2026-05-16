@@ -10,7 +10,8 @@ from typing import Generic, TypeVar
 from .backend import (
     BackendDiagnostics,
     ConstrainedOrderStackBackend,
-    prepare_constrained_order_stack,
+    ConstrainedOrderStackPlan,
+    prepare_constrained_order_stack_plan,
 )
 from .constraints import ConstraintSet
 from .context import Symbol
@@ -144,6 +145,38 @@ class EventOrderStackBackend(Generic[EventT]):
         ]
 
 
+@dataclass(frozen=True)
+class EventOrderStackPlan(Generic[EventT]):
+    """Prefix-independent event sampler plan with encode/decode glue."""
+
+    plan: ConstrainedOrderStackPlan
+    codec: EventCodec[EventT]
+
+    @property
+    def length(self) -> int:
+        return self.plan.length
+
+    def for_prefix(self, prefix: Sequence[EventT]) -> EventOrderStackBackend[EventT]:
+        backend = self.plan.for_prefix(self.codec.encode_sequence(prefix))
+        return EventOrderStackBackend(backend=backend, codec=self.codec)
+
+    def sample_events(
+        self,
+        *,
+        prefix: Sequence[EventT],
+        rng: random.Random | int | None = None,
+    ) -> tuple[EventT, ...]:
+        return self.for_prefix(prefix).sample_events(rng=rng)
+
+    def sample_events_with_orders(
+        self,
+        *,
+        prefix: Sequence[EventT],
+        rng: random.Random | int | None = None,
+    ) -> GeneratedEvents[EventT]:
+        return self.for_prefix(prefix).sample_events_with_orders(rng=rng)
+
+
 def prepare_constrained_order_stack_from_events(
     sequences: Iterable[Sequence[EventT]],
     constraints: ConstraintSet | None = None,
@@ -160,6 +193,36 @@ def prepare_constrained_order_stack_from_events(
 ) -> EventOrderStackBackend[EventT]:
     """Build and prepare a constrained order-stack backend from event sequences."""
 
+    plan = prepare_constrained_order_stack_plan_from_events(
+        sequences,
+        constraints,
+        codec=codec,
+        max_order=max_order,
+        length=length,
+        policy=policy,
+        start_event=start_event,
+        end_event=end_event,
+        alphabet=alphabet,
+        prefer_dense_forbidden=prefer_dense_forbidden,
+    )
+    return plan.for_prefix(prefix)
+
+
+def prepare_constrained_order_stack_plan_from_events(
+    sequences: Iterable[Sequence[EventT]],
+    constraints: ConstraintSet | None = None,
+    *,
+    codec: EventCodec[EventT],
+    max_order: int,
+    length: int,
+    policy: OrderPolicy | None = None,
+    start_event: EventT | None = None,
+    end_event: EventT | None = None,
+    alphabet: Iterable[Symbol] | None = None,
+    prefer_dense_forbidden: bool = True,
+) -> EventOrderStackPlan[EventT]:
+    """Build an order-stack model from events and prepare a prefixless plan."""
+
     encoded_sequences = codec.encode_sequences(sequences)
     model = OrderStackModel.from_sequences(
         encoded_sequences,
@@ -167,16 +230,15 @@ def prepare_constrained_order_stack_from_events(
         start_symbol=None if start_event is None else codec.encode_event(start_event),
         end_symbol=None if end_event is None else codec.encode_event(end_event),
     )
-    backend = prepare_constrained_order_stack(
+    plan = prepare_constrained_order_stack_plan(
         model,
         constraints,
         length=length,
-        prefix=codec.encode_sequence(prefix),
         policy=policy,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
     )
-    return EventOrderStackBackend(backend=backend, codec=codec)
+    return EventOrderStackPlan(plan=plan, codec=codec)
 
 
 def infer_symbol_to_event(

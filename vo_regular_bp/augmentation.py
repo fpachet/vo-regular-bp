@@ -116,6 +116,11 @@ class VirtualAugmentedOrderStackModel:
         init=False,
         repr=False,
     )
+    _lazy_plan_graph_cache: dict[int, dict[int, "LazyVirtualFixedOrderContextGraph"]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not self.transforms:
@@ -248,6 +253,22 @@ class VirtualAugmentedOrderStackModel:
         self._graph_cache[order] = graph
         return graph
 
+    def compile_graphs_for_plan(
+        self,
+        *,
+        length: int,
+    ) -> dict[int, "LazyVirtualFixedOrderContextGraph"]:
+        if length < 0:
+            raise ValueError("length must be non-negative")
+        cache_key = int(length)
+        cached = self._lazy_plan_graph_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        graphs = self._new_lazy_graphs()
+        self._lazy_plan_graph_cache[cache_key] = graphs
+        return graphs
+
     def compile_graphs_for_prefix(
         self,
         *,
@@ -262,7 +283,12 @@ class VirtualAugmentedOrderStackModel:
         if cached is not None:
             return cached
 
-        graphs = {
+        graphs = self._new_lazy_graphs()
+        self._lazy_graph_cache[cache_key] = graphs
+        return graphs
+
+    def _new_lazy_graphs(self) -> dict[int, "LazyVirtualFixedOrderContextGraph"]:
+        return {
             order: LazyVirtualFixedOrderContextGraph(
                 self,
                 order=order,
@@ -270,8 +296,6 @@ class VirtualAugmentedOrderStackModel:
             )
             for order in range(1, self.max_order + 1)
         }
-        self._lazy_graph_cache[cache_key] = graphs
-        return graphs
 
 
 class _LazyOutgoing:

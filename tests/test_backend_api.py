@@ -11,6 +11,8 @@ from vo_regular_bp import (
     MeterConstraint,
     OrderStackModel,
     prepare_constrained_order_stack,
+    prepare_constrained_order_stack_plan,
+    prepare_constrained_order_stack_plan_from_sequences,
     prepare_constrained_order_stack_from_sequences,
     run_constrained_order_stack,
 )
@@ -149,6 +151,33 @@ def test_prepared_backend_samples_and_reports_diagnostics():
     assert all(item.sequence[-1] == 0 for item in samples)
 
 
+def test_prefixless_positional_plan_matches_prefix_bound_backend():
+    model = OrderStackModel.from_sequences([(0, 1, 0, 2, 0, 1, 0)], max_order=1)
+    constraints = ConstraintSet(positional={1: {0}})
+
+    plan = prepare_constrained_order_stack_plan(
+        model,
+        constraints,
+        length=2,
+        policy=LongestFeasiblePolicy(),
+    )
+    planned = plan.for_prefix((0,))
+    direct = prepare_constrained_order_stack(
+        model,
+        constraints,
+        length=2,
+        prefix=(0,),
+        policy=LongestFeasiblePolicy(),
+    )
+
+    assert not plan.is_regular
+    assert plan.length == 2
+    assert planned.sample_with_orders(rng=random.Random(3)) == direct.sample_with_orders(
+        rng=random.Random(3)
+    )
+    assert planned.diagnostics.start_order_masses == direct.diagnostics.start_order_masses
+
+
 def test_prepared_backend_from_sequences_supports_regular_constraints():
     training = (0, 1, 2, 1, 0, 2, 1, 2, 0)
     forbidden = {tuple(training[index : index + 3]) for index in range(len(training) - 2)}
@@ -180,4 +209,49 @@ def test_prepared_backend_from_sequences_supports_regular_constraints():
     assert all(
         all(tuple(sample[index : index + 3]) not in forbidden for index in range(len(sample) - 2))
         for sample in samples
+    )
+
+
+def test_prefixless_regular_plan_reuses_backward_cache_across_prefixes():
+    training = (0, 1, 2, 1, 0, 2, 1, 2, 0)
+    forbidden = {tuple(training[index : index + 3]) for index in range(len(training) - 2)}
+    constraints = ConstraintSet(
+        positional={2: {0}},
+        forbidden_substrings=forbidden,
+    )
+
+    plan = prepare_constrained_order_stack_plan_from_sequences(
+        [training],
+        constraints,
+        max_order=1,
+        length=3,
+        policy=LongestFeasiblePolicy(),
+    )
+    assert plan.is_regular
+    assert sum(len(cache.memo) for cache in plan.plan.backwards.values()) == 0
+
+    first = plan.for_prefix(training[:2])
+    direct = prepare_constrained_order_stack_from_sequences(
+        [training],
+        constraints,
+        max_order=1,
+        length=3,
+        prefix=training[:2],
+        policy=LongestFeasiblePolicy(),
+    )
+    warmed = sum(len(cache.memo) for cache in plan.plan.backwards.values())
+    assert warmed > 0
+    assert first.sample_with_orders(rng=random.Random(3)) == direct.sample_with_orders(
+        rng=random.Random(3)
+    )
+
+    second = plan.for_prefix((1, 2))
+    assert second.result.backwards[1] is first.result.backwards[1]
+    assert sum(len(cache.memo) for cache in plan.plan.backwards.values()) >= warmed
+
+    sample = second.sample(rng=random.Random(4))
+    assert sample[-1] == 0
+    assert all(
+        tuple(sample[index : index + 3]) not in forbidden
+        for index in range(len(sample) - 2)
     )

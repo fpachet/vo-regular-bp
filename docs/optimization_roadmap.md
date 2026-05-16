@@ -170,6 +170,24 @@ Measured effect:
 
 BP timing is unchanged, as expected.
 
+### Prefix-Independent Order-Stack Plans
+
+Status: implemented.
+
+`prepare_constrained_order_stack_plan(...)` prepares the reusable
+`model + length + constraints` part of the order-stack backend without binding a
+prefix. Callers then use `plan.for_prefix(prefix)` to get the ordinary prepared
+backend for a particular prefix.
+
+Effect:
+
+- avoids recompiling constraints and rebuilding reusable backend objects for
+  repeated calls with different prefixes;
+- positional order-stack plans share fully computed backward tables;
+- regular order-stack plans share graph objects and lazy beta memo tables, so
+  later prefixes reuse overlapping `(time, context, DFA-state)` messages;
+- preserves the existing prefix-based API as a convenience wrapper.
+
 ## Tried And Rejected
 
 ### Array-Backed Graph Edges

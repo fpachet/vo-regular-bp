@@ -92,3 +92,40 @@ def test_public_event_and_meter_backend_smoke():
         "long",
     )
     assert generated.symbols == tuple(codec.encode_event(note) for note in generated.events)
+
+
+def test_public_continuation_plan_binds_later_prefixes():
+    @dataclass(frozen=True)
+    class Note:
+        pitch: int
+        duration: int
+
+    training = (
+        Note(60, 1),
+        Note(62, 1),
+        Note(64, 2),
+        Note(60, 1),
+        Note(65, 1),
+        Note(72, 2),
+        Note(60, 1),
+    )
+    plan = vbp.prepare_continuation_plan(
+        [training],
+        horizon=2,
+        max_order=1,
+        constraints=vbp.final_pitch_class(
+            0,
+            length=2,
+            symbol_to_pitch=lambda symbol: symbol[0],
+        ),
+        event_to_symbol=lambda note: (note.pitch, note.duration),
+        symbol_to_event=lambda symbol: Note(symbol[0], symbol[1]),
+        policy=vbp.LongestFeasiblePolicy(),
+    )
+
+    backend = plan.for_prefix((Note(60, 1),))
+    generated = backend.sample_events_with_orders(rng=0)
+
+    assert generated.events[-1].pitch % 12 == 0
+    assert generated.symbols == tuple((note.pitch, note.duration) for note in generated.events)
+    assert len(generated.orders) == 2

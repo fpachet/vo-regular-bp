@@ -8,6 +8,7 @@ from vo_regular_bp import (
     ConstraintSet,
     OrderStackModel,
     prepare_constrained_order_stack,
+    prepare_constrained_order_stack_plan,
     prepare_until_order_stack,
 )
 ```
@@ -22,8 +23,18 @@ Use `prepare_constrained_order_stack(...)` when you already have an
 `OrderStackModel`. It compiles constraints, runs the backward pass once, and
 returns a reusable `ConstrainedOrderStackBackend`.
 
+Use `prepare_constrained_order_stack_plan(...)` when the same
+`model + length + constraints` will be reused with several prefixes. The plan is
+prefix-independent; call `plan.for_prefix(prefix)` to get the ordinary
+`ConstrainedOrderStackBackend` for that prefix. Existing prefix-taking APIs are
+kept as convenience wrappers, so callers can adopt plans only where repeated
+prefixes make caching worthwhile.
+
 Use `prepare_constrained_order_stack_from_sequences(...)` when your training
 material is already a sequence of hashable symbols.
+
+Use `prepare_constrained_order_stack_plan_from_sequences(...)` for the same
+sequence-building convenience without binding a prefix yet.
 
 Use `prepare_until_order_stack(...)` when you want a variable-length generated
 suffix that stops at the first generated symbol matching a stop constraint.
@@ -38,6 +49,10 @@ rich event objects and needs explicit encode/decode functions.
 Use `prepare_continuation_backend(...)` when integrating with a Continuator-like
 project vocabulary. This facade is still dependency-free and does not import a
 Continuator package.
+
+Use `prepare_continuation_plan(...)` for Continuator-like integrations that make
+many repeated calls with different prefixes but the same training material,
+horizon, and constraints.
 
 For the lower-level exact product-BP engine, use `ContextGraph`, DFA helpers,
 and `run_bp(...)`.
@@ -137,6 +152,30 @@ appropriate when PAD marks learned phrase/bar endings. If a project wants
 length-neutral probabilities after marginalizing over possible stop lengths, it
 should use a dedicated first-hit cumulative-duration backend rather than
 treating PAD as an ordinary learned symbol.
+
+## Prefix-Independent Plans
+
+Prefix-independent plans separate reusable constrained preparation from the
+prefix-dependent sampling start:
+
+```python
+plan = prepare_constrained_order_stack_plan(
+    model,
+    constraints,
+    length=8,
+)
+
+backend = plan.for_prefix(prefix)
+generated = backend.sample_with_orders(rng=0)
+```
+
+For positional-only constraints, the fixed-order backward tables are prepared for
+all graph states up front. For regular constraints, the plan owns shared lazy beta
+caches keyed by time, context state, and DFA state. Calling `for_prefix(...)`
+warms the messages reachable from that prefix; later prefixes reuse any
+overlapping entries. This avoids rebuilding graph/constraint/backward objects
+when an external project repeatedly asks for continuations under the same model,
+horizon, and constraints.
 
 `prepare_until_order_stack(...)` composes the caller's `ConstraintSet` with
 first-hit positional masks for each candidate length: positions before the

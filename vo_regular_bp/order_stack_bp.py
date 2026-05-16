@@ -602,19 +602,45 @@ class OrderStackBPResult:
         return candidate_sets
 
 
-def run_order_stack_bp(
+@dataclass(frozen=True)
+class OrderStackBPPlan:
+    """Prefix-independent positional order-stack BP preparation."""
+
+    model: OrderStackModel
+    length: int
+    constraints: PositionConstraints
+    allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]]
+    graphs: dict[int, FixedOrderContextGraph]
+    backwards: dict[int, list[list[float]]]
+    policy: OrderPolicy
+
+    def for_prefix(self, prefix: Sequence[Symbol]) -> OrderStackBPResult:
+        if not prefix:
+            raise ValueError("order-stack BP requires a non-empty prefix")
+        return OrderStackBPResult(
+            model=self.model,
+            length=self.length,
+            prefix=tuple(prefix),
+            constraints=self.constraints,
+            allowed_forbidden_symbols=self.allowed_forbidden_symbols,
+            graphs=self.graphs,
+            backwards=self.backwards,
+            policy=self.policy,
+        )
+
+
+def prepare_order_stack_bp(
     model: OrderStackModel,
     *,
     length: int,
-    prefix: Sequence[Symbol],
     constraints: PositionConstraints | None = None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
-) -> OrderStackBPResult:
+) -> OrderStackBPPlan:
+    """Prepare prefix-independent positional order-stack backward messages."""
+
     if length < 0:
         raise ValueError("length must be non-negative")
-    if not prefix:
-        raise ValueError("order-stack BP requires a non-empty prefix")
     position_constraints = dict(constraints or {})
     _validate_constraint_positions(position_constraints, length)
     allowed_forbidden = _normalize_allowed_forbidden_symbols(
@@ -634,16 +660,35 @@ def run_order_stack_bp(
         )
         for order, graph in graphs.items()
     }
-    return OrderStackBPResult(
+    return OrderStackBPPlan(
         model=model,
         length=length,
-        prefix=tuple(prefix),
         constraints=position_constraints,
         allowed_forbidden_symbols=allowed_forbidden,
         graphs=graphs,
         backwards=backwards,
         policy=active_policy,
     )
+
+
+def run_order_stack_bp(
+    model: OrderStackModel,
+    *,
+    length: int,
+    prefix: Sequence[Symbol],
+    constraints: PositionConstraints | None = None,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+    policy: OrderPolicy | None = None,
+) -> OrderStackBPResult:
+    if not prefix:
+        raise ValueError("order-stack BP requires a non-empty prefix")
+    return prepare_order_stack_bp(
+        model,
+        length=length,
+        constraints=constraints,
+        allowed_forbidden_symbols=allowed_forbidden_symbols,
+        policy=policy,
+    ).for_prefix(prefix)
 
 
 def _backward_messages(
@@ -1124,6 +1169,55 @@ class RegularOrderStackBPResult:
         return candidate_sets
 
 
+@dataclass(frozen=True)
+class RegularOrderStackBPPlan:
+    """Prefix-independent regular order-stack BP preparation.
+
+    The regular beta memo tables are shared by every prefix-bound result created
+    from this plan. They are intentionally lazy: binding a prefix warms the
+    messages reachable from that prefix, and later prefixes reuse any overlapping
+    product states.
+    """
+
+    model: OrderStackModel
+    length: int
+    acceptor: DFA
+    start_acceptor_state: Hashable
+    graphs: dict[int, FixedOrderContextGraph]
+    backwards: dict[int, _RegularBackwardCache]
+    policy: OrderPolicy
+    constraints: PositionConstraints = field(default_factory=dict)
+    allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]] = field(default_factory=dict)
+
+    def for_prefix(
+        self,
+        prefix: Sequence[Symbol],
+        *,
+        start_acceptor_state: Hashable | None = None,
+    ) -> RegularOrderStackBPResult:
+        if not prefix:
+            raise ValueError("order-stack BP requires a non-empty prefix")
+        acceptor0 = (
+            self.start_acceptor_state
+            if start_acceptor_state is None
+            else start_acceptor_state
+        )
+        result = RegularOrderStackBPResult(
+            model=self.model,
+            length=self.length,
+            prefix=tuple(prefix),
+            acceptor=self.acceptor,
+            start_acceptor_state=acceptor0,
+            graphs=self.graphs,
+            backwards=self.backwards,
+            policy=self.policy,
+            constraints=self.constraints,
+            allowed_forbidden_symbols=self.allowed_forbidden_symbols,
+        )
+        result.start_order_masses()
+        return result
+
+
 def _sample_from_weighted_edges(
     edges: tuple[StackEdge, ...],
     weights: tuple[float, ...],
@@ -1150,6 +1244,89 @@ def _cumulative_weights(weights: tuple[float, ...]) -> tuple[float, ...]:
         total += weight
         cumulative.append(total)
     return tuple(cumulative)
+
+
+def prepare_order_stack_dfa_bp(
+    model: OrderStackModel,
+    acceptor: DFA,
+    *,
+    length: int,
+    start_acceptor_state: Hashable | None = None,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+    policy: OrderPolicy | None = None,
+) -> RegularOrderStackBPPlan:
+    return prepare_order_stack_masked_dfa_bp(
+        model,
+        acceptor,
+        length=length,
+        constraints=None,
+        start_acceptor_state=start_acceptor_state,
+        allowed_forbidden_symbols=allowed_forbidden_symbols,
+        policy=policy,
+    )
+
+
+def prepare_order_stack_masked_dfa_bp(
+    model: OrderStackModel,
+    acceptor: DFA,
+    *,
+    length: int,
+    constraints: PositionConstraints | None = None,
+    start_acceptor_state: Hashable | None = None,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+    policy: OrderPolicy | None = None,
+) -> RegularOrderStackBPPlan:
+    """Prepare reusable regular order-stack backward caches without a prefix."""
+
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    position_constraints = dict(constraints or {})
+    _validate_constraint_positions(position_constraints, length)
+    allowed_forbidden = _normalize_allowed_forbidden_symbols(
+        allowed_forbidden_symbols,
+        length,
+    )
+    active_policy = policy or LongestFeasiblePolicy()
+    acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
+    graphs = _compile_graphs_for_prefixless_plan(model, length=length)
+    backwards = {
+        order: _RegularBackwardCache(
+            graph,
+            acceptor,
+            length,
+            constraints=position_constraints,
+            forbidden_symbols=model.forbidden_symbols,
+            allowed_forbidden_symbols=allowed_forbidden,
+        )
+        for order, graph in graphs.items()
+    }
+    return RegularOrderStackBPPlan(
+        model=model,
+        length=length,
+        acceptor=acceptor,
+        start_acceptor_state=acceptor0,
+        graphs=graphs,
+        backwards=backwards,
+        policy=active_policy,
+        constraints=position_constraints,
+        allowed_forbidden_symbols=allowed_forbidden,
+    )
+
+
+def _compile_graphs_for_prefixless_plan(
+    model: OrderStackModel,
+    *,
+    length: int,
+) -> dict[int, FixedOrderContextGraph]:
+    compile_graphs = getattr(model, "compile_graphs_for_plan", None)
+    if compile_graphs is not None:
+        return compile_graphs(length=length)
+    if getattr(model, "compile_graphs_for_prefix", None) is not None:
+        raise ValueError(
+            "prefix-independent order-stack plans require prefix-independent graph "
+            "compilation; implement compile_graphs_for_plan on the model"
+        )
+    return {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
 
 
 def run_order_stack_dfa_bp(

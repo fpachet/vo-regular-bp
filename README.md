@@ -182,6 +182,7 @@ from vo_regular_bp import (
     LongestFeasiblePolicy,
     OrderStackModel,
     prepare_constrained_order_stack,
+    prepare_constrained_order_stack_plan,
 )
 
 sequence = (60, 64, 67, 72, 76, 67, 71, 72)
@@ -211,6 +212,30 @@ when a regular backend is used.
 
 `run_constrained_order_stack(...)` remains available when callers need the raw
 internal BP result object.
+
+When the model, horizon, and constraints are fixed but many prefixes will be
+sampled, prepare a prefix-independent plan once and bind prefixes later:
+
+```python
+plan = prepare_constrained_order_stack_plan(
+    model,
+    ConstraintSet(positional={3: final_c}),
+    length=4,
+    policy=LongestFeasiblePolicy(),
+)
+
+backend_a = plan.for_prefix(sequence[:2])
+backend_b = plan.for_prefix(sequence[2:4])
+
+sample_a = backend_a.sample(rng=0)
+sample_b = backend_b.sample(rng=1)
+```
+
+For regular constraints, the plan owns the shared graph and backward-message
+caches. Binding a prefix warms the lazy beta messages reachable from that prefix,
+and later prefixes reuse overlapping cached product states. The old
+`prepare_constrained_order_stack(...)` API is now a convenience wrapper around
+this plan path when the model supports prefix-independent graph preparation.
 
 For variable-length Continuator-style suffixes, use
 `prepare_until_order_stack(...)`. It prepares one fixed-length constrained
@@ -346,6 +371,7 @@ from vo_regular_bp import (
     duration_total_constraint,
     final_pitch_class_constraint,
     prepare_continuation_backend,
+    prepare_continuation_plan,
 )
 
 constraints = combine_constraints(
@@ -379,6 +405,22 @@ The facade defaults to `SingletonAvoidingBackoffPolicy`, matching the
 Continuator-style policy-backoff interpretation. Pass `policy=...` to use a
 different order-selection policy. See `examples/continuator_style_backend.py`
 for a complete dependency-free example.
+
+When making many calls with the same training material, horizon, and constraints,
+use `prepare_continuation_plan(...)` once and bind each prefix later:
+
+```python
+plan = prepare_continuation_plan(
+    [training_events],
+    horizon=8,
+    max_order=4,
+    constraints=constraints,
+    event_to_symbol=lambda event: (event.pitch, event.duration),
+)
+
+backend = plan.for_prefix(prefix_events)
+generated = backend.sample_events_with_orders(rng=0)
+```
 
 For variable musical length in a fixed BP horizon, use
 `padded_duration_total_constraint(...)` with explicit zero-duration PAD symbols

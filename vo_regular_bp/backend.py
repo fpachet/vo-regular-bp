@@ -19,9 +19,13 @@ from .context import Symbol
 from .order_stack_bp import (
     OrderPolicy,
     OrderSampleStep,
+    OrderStackBPPlan,
     OrderStackModel,
     RegularOrderStackBPResult,
+    RegularOrderStackBPPlan,
     OrderStackBPResult,
+    prepare_order_stack_bp,
+    prepare_order_stack_masked_dfa_bp,
     run_order_stack_bp,
     run_order_stack_masked_dfa_bp,
 )
@@ -173,6 +177,45 @@ class ConstrainedOrderStackBackend:
 
 
 @dataclass(frozen=True)
+class ConstrainedOrderStackPlan:
+    """Prefix-independent constrained order-stack preparation.
+
+    Keep this object around when the model, horizon, and constraints are fixed
+    but callers need to sample from many different prefixes. ``for_prefix`` is
+    cheap and returns the existing prefix-bound backend wrapper.
+    """
+
+    plan: OrderStackBPPlan | RegularOrderStackBPPlan
+
+    @property
+    def length(self) -> int:
+        return self.plan.length
+
+    @property
+    def is_regular(self) -> bool:
+        return isinstance(self.plan, RegularOrderStackBPPlan)
+
+    def for_prefix(self, prefix: Sequence[Symbol]) -> ConstrainedOrderStackBackend:
+        return ConstrainedOrderStackBackend(self.plan.for_prefix(prefix))
+
+    def sample(
+        self,
+        *,
+        prefix: Sequence[Symbol],
+        rng: random.Random | int | None = None,
+    ) -> tuple[Symbol, ...]:
+        return self.for_prefix(prefix).sample(rng=rng)
+
+    def sample_with_orders(
+        self,
+        *,
+        prefix: Sequence[Symbol],
+        rng: random.Random | int | None = None,
+    ) -> GeneratedSequence:
+        return self.for_prefix(prefix).sample_with_orders(rng=rng)
+
+
+@dataclass(frozen=True)
 class UntilOrderStackBackend:
     """Prepared reusable first-hit order-stack sampler."""
 
@@ -307,6 +350,46 @@ def run_constrained_order_stack(
     )
 
 
+def prepare_constrained_order_stack_plan(
+    model: OrderStackModel,
+    constraints: ConstraintSet | None = None,
+    *,
+    length: int,
+    policy: OrderPolicy | None = None,
+    alphabet: Iterable[Symbol] | None = None,
+    prefer_dense_forbidden: bool = True,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+) -> ConstrainedOrderStackPlan:
+    """Prepare reusable constrained order-stack BP without binding a prefix."""
+
+    compiled = compile_constraints(
+        constraints,
+        length=length,
+        alphabet=tuple(model.alphabet if alphabet is None else alphabet),
+        prefer_dense_forbidden=prefer_dense_forbidden,
+    )
+    if compiled.regular_acceptor is None:
+        return ConstrainedOrderStackPlan(
+            prepare_order_stack_bp(
+                model,
+                length=length,
+                constraints=compiled.positional,
+                allowed_forbidden_symbols=allowed_forbidden_symbols,
+                policy=policy,
+            )
+        )
+    return ConstrainedOrderStackPlan(
+        prepare_order_stack_masked_dfa_bp(
+            model,
+            compiled.regular_acceptor,
+            length=length,
+            constraints=compiled.positional,
+            allowed_forbidden_symbols=allowed_forbidden_symbols,
+            policy=policy,
+        )
+    )
+
+
 def prepare_constrained_order_stack(
     model: OrderStackModel,
     constraints: ConstraintSet | None = None,
@@ -320,17 +403,61 @@ def prepare_constrained_order_stack(
 ) -> ConstrainedOrderStackBackend:
     """Compile constraints and return a reusable order-stack backend."""
 
-    return ConstrainedOrderStackBackend(
-        run_constrained_order_stack(
+    try:
+        plan = prepare_constrained_order_stack_plan(
             model,
             constraints,
             length=length,
-            prefix=prefix,
             policy=policy,
             alphabet=alphabet,
             prefer_dense_forbidden=prefer_dense_forbidden,
             allowed_forbidden_symbols=allowed_forbidden_symbols,
         )
+    except ValueError as error:
+        if "prefix-independent graph compilation" not in str(error):
+            raise
+        return ConstrainedOrderStackBackend(
+            run_constrained_order_stack(
+                model,
+                constraints,
+                length=length,
+                prefix=prefix,
+                policy=policy,
+                alphabet=alphabet,
+                prefer_dense_forbidden=prefer_dense_forbidden,
+                allowed_forbidden_symbols=allowed_forbidden_symbols,
+            )
+        )
+    return plan.for_prefix(prefix)
+
+
+def prepare_constrained_order_stack_plan_from_sequences(
+    sequences: Iterable[Sequence[Symbol]],
+    constraints: ConstraintSet | None = None,
+    *,
+    max_order: int,
+    length: int,
+    policy: OrderPolicy | None = None,
+    start_symbol: Symbol | None = None,
+    end_symbol: Symbol | None = None,
+    alphabet: Iterable[Symbol] | None = None,
+    prefer_dense_forbidden: bool = True,
+) -> ConstrainedOrderStackPlan:
+    """Build an order-stack model from sequences and prepare a prefixless plan."""
+
+    model = OrderStackModel.from_sequences(
+        sequences,
+        max_order=max_order,
+        start_symbol=start_symbol,
+        end_symbol=end_symbol,
+    )
+    return prepare_constrained_order_stack_plan(
+        model,
+        constraints,
+        length=length,
+        policy=policy,
+        alphabet=alphabet,
+        prefer_dense_forbidden=prefer_dense_forbidden,
     )
 
 
