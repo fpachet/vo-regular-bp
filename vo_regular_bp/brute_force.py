@@ -6,7 +6,7 @@ from collections import defaultdict
 from itertools import product
 from typing import Hashable, Iterable, Mapping
 
-from .acceptors import DFA
+from .acceptors import DFA, transition_weight as regular_transition_weight
 from .context import Context, ContextGraph, Symbol, _as_context
 
 
@@ -30,17 +30,30 @@ def brute_force_distribution(
 
     if alphabet is not None:
         for sequence in product(tuple(alphabet), repeat=length):
-            state = acceptor0
+            context_state = context0
+            acceptor_state = acceptor0
+            probability = 1.0
             accepted = True
             for symbol in sequence:
-                state = acceptor.next_state(state, symbol)
-                if state is None:
+                edge = next(
+                    (edge for edge in graph.outgoing(context_state) if edge.symbol == symbol),
+                    None,
+                )
+                if edge is None:
                     accepted = False
                     break
-            if not accepted or not acceptor.is_accepting(state):
-                continue
-            probability = graph.probability(sequence, start_state=context0)
-            if probability > 0.0:
+                next_acceptor_state = acceptor.next_state(acceptor_state, symbol)
+                if next_acceptor_state is None:
+                    accepted = False
+                    break
+                dfa_weight = regular_transition_weight(acceptor, acceptor_state, symbol)
+                if dfa_weight <= 0.0:
+                    accepted = False
+                    break
+                probability *= edge.probability * dfa_weight
+                context_state = edge.next_state
+                acceptor_state = next_acceptor_state
+            if accepted and acceptor.is_accepting(acceptor_state) and probability > 0.0:
                 masses[sequence] += probability
         return dict(masses)
 
@@ -60,12 +73,15 @@ def brute_force_distribution(
             next_acceptor_state = acceptor.next_state(acceptor_state, edge.symbol)
             if next_acceptor_state is None:
                 continue
+            dfa_weight = regular_transition_weight(acceptor, acceptor_state, edge.symbol)
+            if dfa_weight <= 0.0:
+                continue
             visit(
                 time + 1,
                 edge.next_state,
                 next_acceptor_state,
                 prefix + (edge.symbol,),
-                probability * edge.probability,
+                probability * edge.probability * dfa_weight,
             )
 
     visit(0, context0, acceptor0, (), 1.0)

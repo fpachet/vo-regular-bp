@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import random
 from typing import Hashable, Iterable, Sequence
 
-from .acceptors import DFA
+from .acceptors import DFA, transition_weight as regular_transition_weight
 from .context import Context, ContextGraph, Symbol, _as_context
 
 ProductState = tuple[Context, Hashable]
@@ -16,6 +16,7 @@ ProductState = tuple[Context, Hashable]
 class ProductEdge:
     symbol: Symbol
     probability: float
+    transition_weight: float
     next_state: ProductState
     order_weights: tuple[tuple[int, float], ...] = ()
 
@@ -67,7 +68,11 @@ class ProductBPResult:
         beta_next = self.betas[time + 1]
         weighted = []
         for edge in self.edges[time].get(state, ()):
-            weight = edge.probability * beta_next.get(edge.next_state, 0.0)
+            weight = (
+                edge.probability
+                * edge.transition_weight
+                * beta_next.get(edge.next_state, 0.0)
+            )
             if weight > 0.0:
                 weighted.append((edge, weight))
         result = tuple(weighted)
@@ -166,7 +171,11 @@ class ProductBPResult:
             )
             if edge is None:
                 return 0.0
-            weight = edge.probability * self.betas[time + 1].get(edge.next_state, 0.0)
+            weight = (
+                edge.probability
+                * edge.transition_weight
+                * self.betas[time + 1].get(edge.next_state, 0.0)
+            )
             if weight <= 0.0:
                 return 0.0
             probability *= weight / beta_now
@@ -205,11 +214,15 @@ def run_bp(
                 next_acceptor_state = acceptor.next_state(acceptor_state, edge.symbol)
                 if next_acceptor_state is None:
                     continue
+                dfa_weight = regular_transition_weight(acceptor, acceptor_state, edge.symbol)
+                if dfa_weight <= 0.0:
+                    continue
                 next_product_state = (edge.next_state, next_acceptor_state)
                 product_edges.append(
                     ProductEdge(
                         symbol=edge.symbol,
                         probability=edge.probability,
+                        transition_weight=dfa_weight,
                         next_state=next_product_state,
                         order_weights=edge.order_weights or ((len(context_state), 1.0),),
                     )
@@ -231,7 +244,9 @@ def run_bp(
         beta_now: dict[ProductState, float] = {}
         for state in layers[time]:
             beta_now[state] = sum(
-                edge.probability * beta_next.get(edge.next_state, 0.0)
+                edge.probability
+                * edge.transition_weight
+                * beta_next.get(edge.next_state, 0.0)
                 for edge in edges_by_time[time].get(state, ())
             )
         betas[time] = beta_now

@@ -73,7 +73,16 @@ is the library form of the paper's MAXORDER copied n-gram constraint.
 
 `regular_acceptors` are caller-supplied deterministic acceptors. A transition
 returning `None` rejects the emitted symbol from the current acceptor state.
-Multiple regular constraints are intersected exactly.
+Acceptors may also implement `transition_weight(state, symbol) -> float` to add
+soft multiplicative transition weights. The default weight is `1.0`, and a
+weight of `0.0` rejects the transition. Multiple regular constraints are
+intersected exactly, multiplying their transition weights.
+
+For example, an adaptive repetition penalty can be represented by a DFA whose
+state tracks recent symbols and whose `transition_weight(...)` returns
+`exp(-lambda * repetition_cost)`. For a fixed BP run these weights are treated
+as ordinary edge potentials, so beta messages and sampling use the same
+normalized distribution.
 
 `meter` is a finite per-position class pattern. It is useful for constraints
 such as strong/weak beats, stress classes, or symbolic duration classes.

@@ -17,6 +17,8 @@ except _PackageNotFoundError:
 from .acceptors import (
     DFA,
     DenseForbiddenSubstringDFA,
+    SupportsWeightedTransitions,
+    WeightedDFA,
     all_of,
     cumulative_meter_acceptor,
     dense_forbidden_substring_acceptor,
@@ -127,7 +129,9 @@ __all__ = [
     "DFA",
     "DenseForbiddenSubstringDFA",
     "Edge",
+    "SupportsWeightedTransitions",
     "Symbol",
+    "WeightedDFA",
     "all_of",
     "cumulative_meter_acceptor",
     "dense_forbidden_substring_acceptor",

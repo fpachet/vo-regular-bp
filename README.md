@@ -112,10 +112,14 @@ backoff mixture:
 - `ContextGraph.from_backoff_sequences(...)`
 
 `DFA` is the deterministic acceptor interface used by product BP. A transition
-returning `None` rejects that symbol from the current acceptor state.
+returning `None` rejects that symbol from the current acceptor state. Acceptors
+may also expose `transition_weight(state, symbol) -> float` for soft regular
+constraints: BP multiplies the VOMM transition probability by this weight before
+normalizing. The default weight is `1.0`; a weight of `0.0` acts as a hard ban.
 
 Available acceptor helpers include:
 
+- `WeightedDFA`: convenience subclass for weighted regular constraints.
 - `positional_acceptor`: zero-based per-position allowed symbols.
 - `meter_acceptor`: finite meter/class patterns.
 - `cumulative_meter_acceptor`: cumulative-cost meter predicates.
@@ -158,7 +162,7 @@ Continuator-style constrained policy backoff over a stack of fixed-order
 models:
 
 - `run_order_stack_bp`: positional constraints only.
-- `run_order_stack_dfa_bp`: regular DFA constraints.
+- `run_order_stack_dfa_bp`: regular DFA constraints, including weighted transitions.
 - `run_order_stack_masked_dfa_bp`: regular DFA plus positional masks.
 
 This is a generation policy, not exact conditioning of one fixed stochastic
@@ -274,7 +278,9 @@ the sentinel at the final stop position.
 - `positional`: per-time symbol masks or predicates.
 - `forbidden_substrings`: exact forbidden substring / MAXORDER constraints,
   compiled to a dense DFA when possible.
-- `regular_acceptors`: caller-supplied `DFA` instances.
+- `regular_acceptors`: caller-supplied `DFA` or `WeightedDFA` instances. Soft
+  transition weights are multiplied into BP; missing transitions or weight
+  `0.0` reject the symbol.
 - `meter`: a `MeterConstraint` for finite per-symbol meter/class patterns.
 - `cumulative_meter`: a `CumulativeMeterConstraint` for duration/cost
   accumulation, bar-boundary predicates, final total cost, and optional padding

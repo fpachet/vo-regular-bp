@@ -2,19 +2,36 @@
 
 from __future__ import annotations
 
+import math
 from itertools import product
-from typing import Callable, Hashable, Iterable, Mapping, Sequence
+from typing import Callable, Hashable, Iterable, Mapping, Protocol, Sequence
 
 Symbol = Hashable
 State = Hashable
+
+
+class SupportsWeightedTransitions(Protocol):
+    """Structural acceptor interface with optional soft transition weights."""
+
+    start_state: State
+
+    def next_state(self, state: State, symbol: Symbol) -> State | None:
+        ...
+
+    def is_accepting(self, state: State) -> bool:
+        ...
+
+    def transition_weight(self, state: State, symbol: Symbol) -> float:
+        ...
 
 
 class DFA:
     """Small deterministic acceptor interface.
 
     A transition returning ``None`` means that the emitted symbol is rejected
-    from that state. The product BP code only relies on ``start_state``,
-    ``next_state`` and ``is_accepting``.
+    from that state. Legal transitions can optionally carry nonnegative
+    multiplicative weights through ``transition_weight``; the default is
+    ``1.0``, so ordinary hard DFAs are unchanged.
     """
 
     def __init__(
@@ -26,6 +43,8 @@ class DFA:
         states: Iterable[State] | None = None,
         alphabet: Iterable[Symbol] | None = None,
         transition_func: Callable[[State, Symbol], State | None] | None = None,
+        transition_weights: Mapping[State, Mapping[Symbol, float]] | None = None,
+        transition_weight_func: Callable[[State, Symbol], float] | None = None,
         accept_func: Callable[[State], bool] | None = None,
         name: str = "dfa",
     ) -> None:
@@ -40,9 +59,14 @@ class DFA:
             state: dict(symbols)
             for state, symbols in (transitions or {}).items()
         }
+        self._transition_weights = {
+            state: dict(symbols)
+            for state, symbols in (transition_weights or {}).items()
+        }
         self.states = None if states is None else frozenset(states)
         self.alphabet = None if alphabet is None else frozenset(alphabet)
         self._transition_func = transition_func
+        self._transition_weight_func = transition_weight_func
         self._accept_func = accept_func
         self.name = name
 
@@ -50,6 +74,13 @@ class DFA:
         if self._transition_func is not None:
             return self._transition_func(state, symbol)
         return self.transitions.get(state, {}).get(symbol)
+
+    def transition_weight(self, state: State, symbol: Symbol) -> float:
+        transition_weight_func = getattr(self, "_transition_weight_func", None)
+        if transition_weight_func is not None:
+            return float(transition_weight_func(state, symbol))
+        transition_weights = getattr(self, "_transition_weights", {})
+        return float(transition_weights.get(state, {}).get(symbol, 1.0))
 
     def is_accepting(self, state: State) -> bool:
         if self._accept_func is not None:
@@ -59,8 +90,11 @@ class DFA:
     def accepts(self, sequence: Sequence[Symbol]) -> bool:
         state = self.start_state
         for symbol in sequence:
+            current_state = state
             state = self.next_state(state, symbol)
             if state is None:
+                return False
+            if transition_weight(self, current_state, symbol) <= 0.0:
                 return False
         return self.is_accepting(state)
 
@@ -68,6 +102,15 @@ class DFA:
         if self.states is None:
             return None
         return len(self.states)
+
+
+class WeightedDFA(DFA):
+    """DFA subclass documenting weighted regular-constraint semantics.
+
+    Subclasses may override ``transition_weight``. The inherited implementation
+    supports either a transition-weight mapping or a callable passed to
+    ``DFA.__init__``.
+    """
 
 
 class DenseForbiddenSubstringDFA(DFA):
@@ -123,6 +166,8 @@ class DenseForbiddenSubstringDFA(DFA):
             next_state = self.next_state(state, symbol)
             if next_state is None:
                 return False
+            if transition_weight(self, state, symbol) <= 0.0:
+                return False
             state = next_state
         return self.is_accepting(state)
 
@@ -170,6 +215,12 @@ def all_of(*acceptors: DFA, name: str = "all_of") -> DFA:
     def accepting(state: State) -> bool:
         return all(acceptor.is_accepting(part) for acceptor, part in zip(acceptors, state))
 
+    def weight(state: State, symbol: Symbol) -> float:
+        total = 1.0
+        for acceptor, part in zip(acceptors, state):
+            total *= transition_weight(acceptor, part, symbol)
+        return total
+
     states = None
     if all(acceptor.states is not None for acceptor in acceptors):
         sizes = [len(acceptor.states or ()) for acceptor in acceptors]
@@ -188,8 +239,39 @@ def all_of(*acceptors: DFA, name: str = "all_of") -> DFA:
         states=states,
         alphabet=alphabet,
         transition_func=transition,
+        transition_weight_func=weight,
         accept_func=accepting,
         name=name,
+    )
+
+
+def transition_weight(acceptor: object, state: State, symbol: Symbol) -> float:
+    """Return a validated multiplicative weight for a legal transition.
+
+    Acceptors without ``transition_weight`` are treated as ordinary hard DFAs
+    with weight ``1.0``. A weight of ``0.0`` is allowed and acts as hard
+    rejection in BP; negative or non-finite weights are invalid.
+    """
+
+    method = getattr(acceptor, "transition_weight", None)
+    raw_weight = 1.0 if method is None else method(state, symbol)
+    weight = float(raw_weight)
+    if not math.isfinite(weight) or weight < 0.0:
+        raise ValueError(
+            f"transition weight for state {state!r} and symbol {symbol!r} "
+            f"must be a finite nonnegative number, got {raw_weight!r}"
+        )
+    return weight
+
+
+def has_custom_transition_weights(acceptor: object) -> bool:
+    method = getattr(type(acceptor), "transition_weight", None)
+    default_method = getattr(DFA, "transition_weight")
+    if method is not None and method is not default_method:
+        return True
+    return bool(
+        getattr(acceptor, "_transition_weights", None)
+        or getattr(acceptor, "_transition_weight_func", None) is not None
     )
 
 
