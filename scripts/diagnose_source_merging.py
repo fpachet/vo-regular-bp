@@ -20,6 +20,12 @@ def main() -> None:
     parser.add_argument("--max-order", type=int, default=6)
     parser.add_argument("--alpha", type=float, default=0.01)
     parser.add_argument("--min-support", type=float, default=10.0)
+    parser.add_argument(
+        "--projection",
+        choices=("identity", "pitch-class", "interval"),
+        default="identity",
+        help="simple built-in projection for diagnostics",
+    )
     parser.add_argument("--heldout", type=Path)
     args = parser.parse_args()
 
@@ -27,11 +33,13 @@ def main() -> None:
     graph = ContextGraph.from_sequences([sequence], max_order=args.max_order)
     exact_stats = exact_context_graph_quotient_stats(graph)
     exact = minimize_context_graph(graph)
+    merge_kwargs = _projection_kwargs(args.projection)
     merged = alergia_merge(
         graph,
         alpha=args.alpha,
         min_support=args.min_support,
         recursive=True,
+        **merge_kwargs,
     )
     merged_metadata = alergia_metadata(merged)
 
@@ -59,6 +67,9 @@ def main() -> None:
                     "ALERGIA conflicting destinations",
                     merged_metadata.conflicting_symbol_destinations,
                 ),
+                ("ALERGIA projection kind", merged_metadata.projection_kind),
+                ("ALERGIA symbol projection", merged_metadata.symbol_projection),
+                ("ALERGIA transition projection", merged_metadata.transition_projection),
             ]
         )
 
@@ -90,6 +101,26 @@ def _coerce_token(token: str) -> object:
         return int(token)
     except ValueError:
         return token
+
+
+def _projection_kwargs(name: str) -> dict[str, object]:
+    if name == "identity":
+        return {}
+    if name == "pitch-class":
+        return {"symbol_projection": _pitch_class_projection}
+    if name == "interval":
+        return {"transition_projection": _interval_projection}
+    raise ValueError(f"unknown projection {name!r}")
+
+
+def _pitch_class_projection(symbol: object) -> object:
+    return symbol % 12 if isinstance(symbol, int) else symbol
+
+
+def _interval_projection(state: tuple[object, ...], symbol: object, _edge: object) -> object:
+    if state and isinstance(state[-1], int) and isinstance(symbol, int):
+        return symbol - state[-1]
+    return symbol
 
 
 def _average_log_probability(graph: ContextGraph, sequence: tuple[object, ...]) -> float:

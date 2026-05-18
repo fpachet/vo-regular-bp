@@ -173,15 +173,21 @@ merged = alergia_merge(
     alpha=0.01,
     min_support=10,
     recursive=True,
-    symbol_projection=lambda symbol: symbol,
+    transition_projection=lambda state, symbol, edge: (
+        symbol - state[-1]
+        if state and isinstance(state[-1], int) and isinstance(symbol, int)
+        else symbol
+    ),
 )
 ```
 
 The returned object is still a `ContextGraph`, so `run_bp(...)` remains exact
 with respect to the merged source model. This is not constrained-product
 minimization and is not applied automatically. The optional
-`symbol_projection` argument is where a client supplies domain semantics for
-similarity; the default compares raw emitted symbols.
+`symbol_projection` and `transition_projection` arguments are where a client
+supplies domain semantics for similarity; `transition_projection(state, symbol,
+edge)` handles context-relative abstractions and takes precedence when both are
+provided. The default compares raw emitted symbols.
 
 ### Positional BP
 

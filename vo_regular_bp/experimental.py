@@ -31,6 +31,8 @@ class AlergiaMergeMetadata:
     classes: tuple[tuple[Context, ...], ...]
     conflicting_symbol_destinations: int = 0
     symbol_projection: str | None = None
+    transition_projection: str | None = None
+    projection_kind: str = "identity"
 
     @property
     def state_compression_ratio(self) -> float:
@@ -54,6 +56,8 @@ class AlergiaMergeMetadata:
             "edge_compression_ratio": self.edge_compression_ratio,
             "conflicting_symbol_destinations": self.conflicting_symbol_destinations,
             "symbol_projection": self.symbol_projection,
+            "transition_projection": self.transition_projection,
+            "projection_kind": self.projection_kind,
         }
 
 
@@ -64,15 +68,18 @@ def alergia_merge(
     min_support: int | float = 10,
     recursive: bool = True,
     symbol_projection: Callable[[Symbol], Hashable] | None = None,
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable] | None = None,
 ) -> ContextGraph:
     """Return an ALERGIA-like approximate source-state merge.
 
     This function acts only on the unconstrained source graph. ``symbol_projection``
-    lets a caller provide the abstraction semantics used by the compatibility
-    test, for example pitch class, interval class, or another project-defined
-    feature. The returned graph still emits concrete symbols and remains a
-    regular :class:`ContextGraph`, so existing BP remains exact with respect to
-    the new merged source model.
+    lets a caller compare emitted symbols through a feature map. For
+    context-aware semantics, ``transition_projection`` can instead map
+    ``(state, symbol, edge)`` to a comparison feature, for example an interval
+    from the current context to the emitted symbol. If both projections are
+    supplied, ``transition_projection`` takes precedence. The returned graph
+    still emits concrete symbols and remains a regular :class:`ContextGraph`,
+    so existing BP remains exact with respect to the new merged source model.
     """
 
     if alpha <= 0.0 or alpha >= 1.0:
@@ -81,7 +88,10 @@ def alergia_merge(
         raise ValueError("min_support must be non-negative")
 
     counts = _state_counts(graph)
-    project = symbol_projection or _identity_projection
+    project = _transition_projector(
+        symbol_projection=symbol_projection,
+        transition_projection=transition_projection,
+    )
     supports = {
         state: float(sum(symbol_counts.values()))
         for state, symbol_counts in counts.items()
@@ -109,7 +119,7 @@ def alergia_merge(
                 alpha=float(alpha),
                 min_support=float(min_support),
                 recursive=recursive,
-                symbol_projection=project,
+                transition_projection=project,
             )
             if compatible:
                 union.union(state, members[0])
@@ -125,6 +135,8 @@ def alergia_merge(
         min_support=float(min_support),
         recursive=recursive,
         symbol_projection_name=_projection_name(symbol_projection),
+        transition_projection_name=_projection_name(transition_projection),
+        projection_kind=_projection_kind(symbol_projection, transition_projection),
     )
 
 
@@ -144,7 +156,7 @@ def _compatible_with_class(
     alpha: float,
     min_support: float,
     recursive: bool,
-    symbol_projection: Callable[[Symbol], Hashable],
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable],
 ) -> tuple[bool, list[tuple[Context, Context]]]:
     pairs: list[tuple[Context, Context]] = []
     for member in members:
@@ -157,7 +169,7 @@ def _compatible_with_class(
             alpha=alpha,
             min_support=min_support,
             recursive=recursive,
-            symbol_projection=symbol_projection,
+            transition_projection=transition_projection,
             seen=set(),
         )
         if not compatible:
@@ -176,7 +188,7 @@ def _compatible_pair(
     alpha: float,
     min_support: float,
     recursive: bool,
-    symbol_projection: Callable[[Symbol], Hashable],
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable],
     seen: set[tuple[Context, Context]],
 ) -> tuple[bool, list[tuple[Context, Context]]]:
     if left == right:
@@ -197,8 +209,8 @@ def _compatible_pair(
     if left_support < min_support or right_support < min_support:
         return False, []
 
-    left_projected = _projected_counts(left_counts, symbol_projection)
-    right_projected = _projected_counts(right_counts, symbol_projection)
+    left_projected = _projected_counts(graph, counts, left, transition_projection)
+    right_projected = _projected_counts(graph, counts, right, transition_projection)
     bound = _hoeffding_bound(left_support, right_support, alpha)
     for projected_symbol in set(left_projected) | set(right_projected):
         left_probability = left_projected.get(projected_symbol, 0.0) / left_support
@@ -212,13 +224,13 @@ def _compatible_pair(
             graph,
             counts,
             left,
-            symbol_projection,
+            transition_projection,
         )
         right_next = _dominant_next_by_projected_symbol(
             graph,
             counts,
             right,
-            symbol_projection,
+            transition_projection,
         )
         for projected_symbol in set(left_next) & set(right_next):
             compatible, child_pairs = _compatible_pair(
@@ -230,7 +242,7 @@ def _compatible_pair(
                 alpha=alpha,
                 min_support=min_support,
                 recursive=True,
-                symbol_projection=symbol_projection,
+                transition_projection=transition_projection,
                 seen=seen,
             )
             if not compatible:
@@ -248,6 +260,8 @@ def _build_merged_graph(
     min_support: float,
     recursive: bool,
     symbol_projection_name: str | None,
+    transition_projection_name: str | None,
+    projection_kind: str,
 ) -> ContextGraph:
     states = tuple(sorted(graph.states, key=_context_sort_key))
     root_to_members: dict[Context, list[Context]] = defaultdict(list)
@@ -371,6 +385,8 @@ def _build_merged_graph(
         classes=classes,
         conflicting_symbol_destinations=conflicting_symbol_destinations,
         symbol_projection=symbol_projection_name,
+        transition_projection=transition_projection_name,
+        projection_kind=projection_kind,
     )
     return merged
 
@@ -396,12 +412,17 @@ def _state_counts(graph: ContextGraph) -> dict[Context, dict[Symbol, float]]:
 
 
 def _projected_counts(
-    counts: dict[Symbol, float],
-    symbol_projection: Callable[[Symbol], Hashable],
+    graph: ContextGraph,
+    counts: dict[Context, dict[Symbol, float]],
+    state: Context,
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable],
 ) -> dict[Hashable, float]:
     projected: Counter[Hashable] = Counter()
-    for symbol, count in counts.items():
-        projected[symbol_projection(symbol)] += count
+    state_counts = counts.get(state, {})
+    for edge in graph.outgoing(state):
+        count = state_counts.get(edge.symbol, 0.0)
+        if count > 0.0:
+            projected[transition_projection(state, edge.symbol, edge)] += count
     return dict(projected)
 
 
@@ -409,7 +430,7 @@ def _dominant_next_by_projected_symbol(
     graph: ContextGraph,
     counts: dict[Context, dict[Symbol, float]],
     state: Context,
-    symbol_projection: Callable[[Symbol], Hashable],
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable],
 ) -> dict[Hashable, Context]:
     candidates: dict[Hashable, Counter[Context]] = defaultdict(Counter)
     state_counts = counts.get(state, {})
@@ -417,7 +438,7 @@ def _dominant_next_by_projected_symbol(
         count = state_counts.get(edge.symbol, 0.0)
         if count <= 0.0:
             continue
-        candidates[symbol_projection(edge.symbol)][edge.next_state] += count
+        candidates[transition_projection(state, edge.symbol, edge)][edge.next_state] += count
     return {
         projected_symbol: max(
             destination_counts,
@@ -456,14 +477,37 @@ def _hashable_key(value: Any) -> Hashable:
     return (type(value).__name__, value)
 
 
-def _identity_projection(symbol: Symbol) -> Hashable:
+def _identity_projection(_state: Context, symbol: Symbol, _edge: Edge) -> Hashable:
     return symbol
 
 
-def _projection_name(symbol_projection: Callable[[Symbol], Hashable] | None) -> str | None:
-    if symbol_projection is None:
+def _transition_projector(
+    *,
+    symbol_projection: Callable[[Symbol], Hashable] | None,
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable] | None,
+) -> Callable[[Context, Symbol, Edge], Hashable]:
+    if transition_projection is not None:
+        return transition_projection
+    if symbol_projection is not None:
+        return lambda _state, symbol, _edge: symbol_projection(symbol)
+    return _identity_projection
+
+
+def _projection_name(projection: Callable[..., Hashable] | None) -> str | None:
+    if projection is None:
         return None
-    return getattr(symbol_projection, "__name__", repr(symbol_projection))
+    return getattr(projection, "__name__", repr(projection))
+
+
+def _projection_kind(
+    symbol_projection: Callable[[Symbol], Hashable] | None,
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable] | None,
+) -> str:
+    if transition_projection is not None:
+        return "transition"
+    if symbol_projection is not None:
+        return "symbol"
+    return "identity"
 
 
 def _ratio(numerator: int, denominator: int) -> float:

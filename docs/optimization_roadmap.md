@@ -395,9 +395,9 @@ Future abstraction work:
   `vo_regular_bp.experimental.alergia_merge`;
 - it deliberately merges statistically compatible continuation profiles to
   explore abstraction/generalization capacity;
-- clients can provide domain semantics with `symbol_projection`, which maps
-  emitted symbols to comparison features while the merged graph continues to
-  emit concrete symbols;
+- clients can provide domain semantics with `symbol_projection` for emitted
+  symbols or `transition_projection(state, symbol, edge)` for context-aware
+  transition features while the merged graph continues to emit concrete symbols;
 - this is a modeling feature, not an exact optimization, and is never enabled
   automatically.
 

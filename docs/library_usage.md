@@ -229,7 +229,11 @@ merged = alergia_merge(
     alpha=0.01,
     min_support=10,
     recursive=True,
-    symbol_projection=lambda symbol: symbol,
+    transition_projection=lambda state, symbol, edge: (
+        symbol - state[-1]
+        if state and isinstance(state[-1], int) and isinstance(symbol, int)
+        else symbol
+    ),
 )
 metadata = alergia_metadata(merged)
 ```
@@ -241,10 +245,12 @@ regular BP remains exact for the merged model. Approximate merging is not a
 constrained-product quotient and is never enabled by default.
 
 By default, compatibility compares raw symbols. Pass `symbol_projection` when a
-client wants to define the abstraction semantics, for example mapping rich
-symbols to feature tuples before distributions are compared. The merged graph
-still emits concrete symbols; the projection only controls the compatibility
-test.
+client wants to compare emitted symbols through a feature map. Pass
+`transition_projection(state, symbol, edge)` when similarity depends on the
+source context and transition, such as relative motion. If both are supplied,
+`transition_projection` takes precedence. The merged graph still emits concrete
+symbols; projections only control the compatibility test and recursive
+successor matching.
 
 ## Exactness Notes
 

@@ -166,3 +166,79 @@ def test_alergia_symbol_projection_supplies_client_semantics():
 
     outgoing_symbols = {edge.symbol for edge in projected.outgoing(("a",))}
     assert outgoing_symbols == {60, 62, 72, 74}
+
+
+def test_alergia_transition_projection_supplies_context_aware_semantics():
+    graph = ContextGraph.from_counts(
+        {
+            ("a", 60): {62: 100},
+            ("b", 72): {74: 100},
+            (60, 62): {64: 100},
+            (72, 74): {76: 100},
+            (62, 64): {64: 100},
+            (74, 76): {76: 100},
+        },
+        max_order=2,
+        start_state=("a", 60),
+    )
+
+    raw = alergia_merge(graph, alpha=0.01, min_support=10)
+    projected = alergia_merge(
+        graph,
+        alpha=0.01,
+        min_support=10,
+        transition_projection=_interval_projection,
+    )
+
+    raw_metadata = alergia_metadata(raw)
+    projected_metadata = alergia_metadata(projected)
+    assert raw_metadata is not None
+    assert projected_metadata is not None
+    assert raw_metadata.state_to_class[("a", 60)] != raw_metadata.state_to_class[("b", 72)]
+    assert projected_metadata.state_to_class[("a", 60)] == projected_metadata.state_to_class[("b", 72)]
+    assert projected_metadata.state_to_class[(60, 62)] == projected_metadata.state_to_class[(72, 74)]
+    assert projected_metadata.transition_projection == "_interval_projection"
+    assert projected_metadata.projection_kind == "transition"
+
+    for state in projected.states:
+        outgoing = projected.outgoing(state)
+        if outgoing:
+            assert math.isclose(sum(edge.probability for edge in outgoing), 1.0)
+
+    acceptor = positional_acceptor(2, alphabet=projected.alphabet)
+    result = run_bp(projected, acceptor, length=2, start_context=("b", 72))
+    assert result.partition_function > 0.0
+
+
+def test_alergia_transition_projection_takes_precedence_over_symbol_projection():
+    graph = ContextGraph.from_counts(
+        {
+            ("a", 60): {62: 100},
+            ("b", 72): {74: 100},
+            (60, 62): {62: 100},
+            (72, 74): {74: 100},
+        },
+        max_order=2,
+        start_state=("a", 60),
+    )
+
+    merged = alergia_merge(
+        graph,
+        alpha=0.01,
+        min_support=10,
+        symbol_projection=lambda symbol: ("raw", symbol),
+        transition_projection=_interval_projection,
+    )
+    metadata = alergia_metadata(merged)
+
+    assert metadata is not None
+    assert metadata.projection_kind == "transition"
+    assert metadata.symbol_projection == "<lambda>"
+    assert metadata.transition_projection == "_interval_projection"
+    assert metadata.state_to_class[("a", 60)] == metadata.state_to_class[("b", 72)]
+
+
+def _interval_projection(state, symbol, _edge):
+    if state and isinstance(state[-1], int) and isinstance(symbol, int):
+        return symbol - state[-1]
+    return symbol
