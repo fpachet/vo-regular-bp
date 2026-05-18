@@ -202,6 +202,50 @@ only at the explicit final stop position, so
 `prepare_until_end_order_stack(...)` can emit END without changing the default
 fixed-length behavior.
 
+## Source Compression
+
+Exact source minimization is optional and semantics-preserving. Use it when you
+want a read-only quotient of the source graph:
+
+```python
+from vo_regular_bp import exact_context_graph_quotient_stats, minimize_context_graph
+
+stats = exact_context_graph_quotient_stats(graph)
+minimized = minimize_context_graph(graph)
+```
+
+For order-stack backends, pass `minimize_source_graphs=True` to preparation
+functions. This minimizes the fixed-order source graphs before BP while keeping
+the training/count model unchanged. BP remains exact with respect to the same
+source model.
+
+Approximate source-state merging is experimental and explicit:
+
+```python
+from vo_regular_bp.experimental import alergia_merge, alergia_metadata
+
+merged = alergia_merge(
+    graph,
+    alpha=0.01,
+    min_support=10,
+    recursive=True,
+    symbol_projection=lambda symbol: symbol,
+)
+metadata = alergia_metadata(merged)
+```
+
+This ALERGIA-like merge compares continuation distributions with a Hoeffding
+compatibility test and recursively checks successor states when requested. It
+changes the source model, but the returned object is a normal `ContextGraph`, so
+regular BP remains exact for the merged model. Approximate merging is not a
+constrained-product quotient and is never enabled by default.
+
+By default, compatibility compares raw symbols. Pass `symbol_projection` when a
+client wants to define the abstraction semantics, for example mapping rich
+symbols to feature tuples before distributions are compared. The merged graph
+still emits concrete symbols; the projection only controls the compatibility
+test.
+
 ## Exactness Notes
 
 `run_bp(...)` samples exactly from one probabilistic context graph conditioned

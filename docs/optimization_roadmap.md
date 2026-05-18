@@ -304,6 +304,103 @@ Risk:
 
 ## Bigger Architectural Options
 
+### Exact Quotient / Probabilistic Automaton Minimization
+
+Status: source-graph minimization implemented as an opt-in compiled view;
+finite-horizon constrained quotienting is not implemented.
+
+Idea:
+
+- after the count model or reachable BP product is built, compute exact state
+  equivalence by partition refinement;
+- two rows are equivalent only when they have the same emitted symbols, exact
+  probabilities/weights, and successor equivalence classes;
+- for constrained finite-horizon BP, compute the quotient time-backwards, since
+  positional masks and accepting states make equivalence time-dependent.
+
+Diagnostic on `data/bach_prelude_c_major_pitches.txt`:
+
+| setup | original | exact quotient | reduction |
+|---|---:|---:|---:|
+| `ContextGraph.from_sequences`, K=6 states | 1401 | 355 | 3.95x |
+| `ContextGraph.from_sequences`, K=6 edges | 1834 | 671 | 2.73x |
+| order-stack final-C mask, K=6 time states | 32283 | 8275 | 3.90x |
+| order-stack final-C mask, K=6 edge relaxations | 37625 | 17940 | 2.10x |
+| reachable MAXORDER+final-C product, K=6 time states | 4753 | 743 | 6.40x |
+| reachable MAXORDER+final-C product, K=6 positive edges | 10007 | 2768 | 3.62x |
+
+Implementation note:
+
+- the shipped opt-in path is exact source-graph minimization, enabled with
+  `minimize_source_graphs=True`;
+- fixed-order graph signatures include `edge.order`, so order diagnostics and
+  traces keep their semantics;
+- minimized graphs are cached on the `OrderStackModel`, so the quotient is not
+  rebuilt for every horizon once the model has been warmed.
+
+Initial K=6, horizon-32 Bach timing with `edge.order` preserved:
+
+| setup | minimize | cold prepare ms | warm prepare ms | sample ms/seq | source states | source edges | product time states |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| final-C only | no | 25.4 | 16.5 | 0.0760 | 3587 | 5246 | n/a |
+| final-C only | yes | 45.9 | 12.7 | 0.0776 | 2534 | 4187 | n/a |
+| MAXORDER len-5 + final-C | no | 43.6 | 35.3 | 0.1206 | 3587 | 5246 | 24556 |
+| MAXORDER len-5 + final-C | yes | 65.4 | 35.2 | 0.1266 | 2534 | 4187 | 24556 |
+
+The opt-in source quotient is therefore useful for memory and warm
+positional-only preparation, but it does not by itself reduce the reachable
+regular product for this MAXORDER benchmark. The larger constrained-product
+reductions in the diagnostic table require a separate horizon-specific quotient
+backend.
+
+Expected gain:
+
+- BP/backward: potentially meaningful, especially for constrained finite-horizon
+  products where many states have identical constrained futures;
+- memory/object count: meaningful;
+- sampling: likely helpful if quotient states can share candidate rows.
+
+Risks:
+
+- probabilities are currently normalized floats; exact minimization should
+  prefer rational/count-derived values where possible;
+- quotienting hides concrete context identity unless representative/context-set
+  metadata is preserved for traces and diagnostics;
+- online training updates become harder, because count changes can split
+  equivalence classes and propagate backward.
+
+Recommendation:
+
+- keep the training/count model uncompressed;
+- use the current opt-in source quotient when memory or repeated positional
+  preparation matters;
+- treat quotient BP/product backends as a secondary experiment, because they are
+  tied to a specific horizon and constraint set;
+- rebuild the quotient after batch training changes rather than maintaining it
+  incrementally.
+
+Real-time Continuator scope:
+
+- source-graph minimization is reusable across calls with different requested
+  lengths;
+- finite-horizon constrained quotienting is not the first target for real-time
+  use, because a final-position constraint makes equivalence depend on the
+  current horizon;
+- if a small set of horizons recurs, constrained quotients or prepared plans can
+  be cached by `(horizon, constraint spec)`.
+
+Future abstraction work:
+
+- an explicit experimental ALERGIA-like source merge is available through
+  `vo_regular_bp.experimental.alergia_merge`;
+- it deliberately merges statistically compatible continuation profiles to
+  explore abstraction/generalization capacity;
+- clients can provide domain semantics with `symbol_projection`, which maps
+  emitted symbols to comparison features while the merged graph continues to
+  emit concrete symbols;
+- this is a modeling feature, not an exact optimization, and is never enabled
+  automatically.
+
 ### Compiled Sampling Tables
 
 Status: recommended next library optimization.

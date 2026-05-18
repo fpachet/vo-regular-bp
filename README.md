@@ -145,6 +145,44 @@ returns a `ProductBPResult` with:
 
 `sample_exact(...)` is a convenience wrapper that runs BP and draws one sample.
 
+### Source Graph Minimization And Experimental Merging
+
+Exact source minimization is available as an optional compiled view. It is
+semantics-preserving and never enabled by default:
+
+```python
+from vo_regular_bp import exact_context_graph_quotient_stats, minimize_context_graph
+
+stats = exact_context_graph_quotient_stats(graph)
+minimized = minimize_context_graph(graph)
+```
+
+Order-stack preparation also accepts `minimize_source_graphs=True`, which
+minimizes the source graphs before running the ordinary exact BP backend. The
+training/count model remains uncompressed, and minimized fixed-order graphs are
+cached on the model for reuse.
+
+Approximate source merging is explicitly experimental and changes the source
+model. It lives outside the safe top-level API:
+
+```python
+from vo_regular_bp.experimental import alergia_merge
+
+merged = alergia_merge(
+    graph,
+    alpha=0.01,
+    min_support=10,
+    recursive=True,
+    symbol_projection=lambda symbol: symbol,
+)
+```
+
+The returned object is still a `ContextGraph`, so `run_bp(...)` remains exact
+with respect to the merged source model. This is not constrained-product
+minimization and is not applied automatically. The optional
+`symbol_projection` argument is where a client supplies domain semantics for
+similarity; the default compares raw emitted symbols.
+
 ### Positional BP
 
 `run_positional_bp(...)` is a no-DFA specialization for fixed-horizon

@@ -93,6 +93,14 @@ from .constraints import (
 )
 from .context import Context, ContextGraph, Edge, Symbol
 from .metrics import empirical_distribution, total_variation
+from .minimization import (
+    ExactQuotientStats,
+    exact_context_graph_quotient_stats,
+    exact_fixed_order_graph_quotient_stats,
+    minimize_context_graph,
+    minimize_fixed_order_graph,
+    minimize_fixed_order_graphs,
+)
 from .order_stack_bp import (
     LongestFeasiblePolicy,
     OrderStackBPPlan,
@@ -175,6 +183,13 @@ __all__ = [
     "run_order_stack_bp",
     "run_order_stack_dfa_bp",
     "run_order_stack_masked_dfa_bp",
+    # Exact source graph minimization.
+    "ExactQuotientStats",
+    "exact_context_graph_quotient_stats",
+    "exact_fixed_order_graph_quotient_stats",
+    "minimize_context_graph",
+    "minimize_fixed_order_graph",
+    "minimize_fixed_order_graphs",
     # Transformation-orbit diagnostics.
     "ForbiddenPatternOrbitStats",
     "RegularProductOrbitStats",

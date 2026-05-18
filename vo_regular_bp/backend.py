@@ -316,6 +316,7 @@ def run_constrained_order_stack(
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+    minimize_source_graphs: bool = False,
 ) -> OrderStackBPResult | RegularOrderStackBPResult:
     """Run constrained order-stack BP through the public constraint API.
 
@@ -338,6 +339,7 @@ def run_constrained_order_stack(
             constraints=compiled.positional,
             allowed_forbidden_symbols=allowed_forbidden_symbols,
             policy=policy,
+            minimize_source_graphs=minimize_source_graphs,
         )
     return run_order_stack_masked_dfa_bp(
         model,
@@ -347,6 +349,7 @@ def run_constrained_order_stack(
         constraints=compiled.positional,
         allowed_forbidden_symbols=allowed_forbidden_symbols,
         policy=policy,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 
@@ -359,6 +362,7 @@ def prepare_constrained_order_stack_plan(
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+    minimize_source_graphs: bool = False,
 ) -> ConstrainedOrderStackPlan:
     """Prepare reusable constrained order-stack BP without binding a prefix."""
 
@@ -376,6 +380,7 @@ def prepare_constrained_order_stack_plan(
                 constraints=compiled.positional,
                 allowed_forbidden_symbols=allowed_forbidden_symbols,
                 policy=policy,
+                minimize_source_graphs=minimize_source_graphs,
             )
         )
     return ConstrainedOrderStackPlan(
@@ -386,6 +391,7 @@ def prepare_constrained_order_stack_plan(
             constraints=compiled.positional,
             allowed_forbidden_symbols=allowed_forbidden_symbols,
             policy=policy,
+            minimize_source_graphs=minimize_source_graphs,
         )
     )
 
@@ -400,6 +406,7 @@ def prepare_constrained_order_stack(
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+    minimize_source_graphs: bool = False,
 ) -> ConstrainedOrderStackBackend:
     """Compile constraints and return a reusable order-stack backend."""
 
@@ -412,6 +419,7 @@ def prepare_constrained_order_stack(
             alphabet=alphabet,
             prefer_dense_forbidden=prefer_dense_forbidden,
             allowed_forbidden_symbols=allowed_forbidden_symbols,
+            minimize_source_graphs=minimize_source_graphs,
         )
     except ValueError as error:
         if "prefix-independent graph compilation" not in str(error):
@@ -426,6 +434,7 @@ def prepare_constrained_order_stack(
                 alphabet=alphabet,
                 prefer_dense_forbidden=prefer_dense_forbidden,
                 allowed_forbidden_symbols=allowed_forbidden_symbols,
+                minimize_source_graphs=minimize_source_graphs,
             )
         )
     return plan.for_prefix(prefix)
@@ -442,6 +451,7 @@ def prepare_constrained_order_stack_plan_from_sequences(
     end_symbol: Symbol | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> ConstrainedOrderStackPlan:
     """Build an order-stack model from sequences and prepare a prefixless plan."""
 
@@ -458,6 +468,7 @@ def prepare_constrained_order_stack_plan_from_sequences(
         policy=policy,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 
@@ -472,6 +483,7 @@ def prepare_until_order_stack(
     policy: OrderPolicy | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> UntilOrderStackBackend:
     """Prepare variable-length first-hit continuation for the order stack.
 
@@ -516,6 +528,7 @@ def prepare_until_order_stack(
             alphabet=alphabet,
             prefer_dense_forbidden=prefer_dense_forbidden,
             allowed_forbidden_symbols=allowed_forbidden,
+            minimize_source_graphs=minimize_source_graphs,
         )
         weight = _length_weight(backend)
         if weight <= 0.0:
@@ -545,6 +558,7 @@ def prepare_until_end_order_stack(
     policy: OrderPolicy | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> UntilOrderStackBackend:
     """Prepare first-hit continuation that stops at ``end_symbol``."""
 
@@ -558,6 +572,7 @@ def prepare_until_end_order_stack(
         policy=policy,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 
@@ -573,6 +588,7 @@ def prepare_constrained_order_stack_from_sequences(
     end_symbol: Symbol | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> ConstrainedOrderStackBackend:
     """Build an order-stack model from sequences and prepare a backend."""
 
@@ -590,6 +606,7 @@ def prepare_constrained_order_stack_from_sequences(
         policy=policy,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 

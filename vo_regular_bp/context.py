@@ -71,6 +71,9 @@ class ContextGraph:
         self.start_state = _as_context(start_state)
         self.states = frozenset(states)
         self.alphabet = frozenset(emitted)
+        self._alias_to_state: dict[Context, Context] = {}
+        self._continuation_counts: dict[Context, dict[Symbol, float]] = {}
+        self._state_supports: dict[Context, float] = {}
         self.max_order = (
             max_order
             if max_order is not None
@@ -98,22 +101,33 @@ class ContextGraph:
             max_order = max((len(context) for context in contexts), default=0)
 
         edges_by_state: dict[Context, list[Edge]] = {}
+        count_metadata: dict[Context, dict[Symbol, float]] = {}
+        state_supports: dict[Context, float] = {}
         for raw_context, counts in continuation_counts.items():
             context = _as_context(raw_context)
             total = float(sum(counts.values()))
             if total <= 0.0:
                 raise ValueError(f"context {context!r} has no positive continuation mass")
+            state_supports[context] = total
+            count_metadata[context] = {
+                symbol: float(count)
+                for symbol, count in counts.items()
+                if count > 0
+            }
             edges_by_state[context] = [
                 Edge(symbol, float(count) / total, cls._canon(context, symbol, contexts, max_order))
                 for symbol, count in counts.items()
                 if count > 0
             ]
-        return cls(
+        graph = cls(
             edges_by_state,
             start_state=start_state,
             max_order=max_order,
             validate=True,
         )
+        graph._continuation_counts = count_metadata
+        graph._state_supports = state_supports
+        return graph
 
     @classmethod
     def from_probabilities(
@@ -131,19 +145,30 @@ class ContextGraph:
             max_order = max((len(context) for context in contexts), default=0)
 
         edges_by_state: dict[Context, list[Edge]] = {}
+        continuation_counts: dict[Context, dict[Symbol, float]] = {}
+        state_supports: dict[Context, float] = {}
         for raw_context, probs in probabilities.items():
             context = _as_context(raw_context)
+            continuation_counts[context] = {
+                symbol: float(prob)
+                for symbol, prob in probs.items()
+                if prob > 0.0
+            }
+            state_supports[context] = float(sum(continuation_counts[context].values()))
             edges_by_state[context] = [
                 Edge(symbol, float(prob), cls._canon(context, symbol, contexts, max_order))
                 for symbol, prob in probs.items()
                 if prob > 0.0
             ]
-        return cls(
+        graph = cls(
             edges_by_state,
             start_state=start_state,
             max_order=max_order,
             validate=True,
         )
+        graph._continuation_counts = continuation_counts
+        graph._state_supports = state_supports
+        return graph
 
     @classmethod
     def from_sequences(
@@ -231,6 +256,8 @@ class ContextGraph:
         contexts = set(counts)
         contexts.add(_as_context(start_state))
         edges_by_state: dict[Context, list[Edge]] = {}
+        continuation_counts: dict[Context, dict[Symbol, float]] = {}
+        state_supports: dict[Context, float] = {}
 
         for context in contexts:
             scores: Counter[Symbol] = Counter()
@@ -252,6 +279,12 @@ class ContextGraph:
             total_score = float(sum(scores.values()))
             if total_score <= 0.0:
                 continue
+            state_supports[context] = total_score
+            continuation_counts[context] = {
+                symbol: float(score)
+                for symbol, score in scores.items()
+                if score > 0.0
+            }
             edges_by_state[context] = [
                 Edge(
                     symbol,
@@ -271,12 +304,15 @@ class ContextGraph:
                 if score > 0.0
             ]
 
-        return cls(
+        graph = cls(
             edges_by_state,
             start_state=start_state,
             max_order=max_order,
             validate=True,
         )
+        graph._continuation_counts = continuation_counts
+        graph._state_supports = state_supports
+        return graph
 
     @staticmethod
     def _canon(
@@ -296,12 +332,23 @@ class ContextGraph:
     def canonical_context(self, context: Iterable[Symbol] | Context, symbol: Symbol) -> Context:
         """Return the longest known suffix after emitting ``symbol``."""
 
-        return self._canon(_as_context(context), symbol, self.states, self.max_order)
+        candidate = _as_context(context) + (symbol,)
+        limit = min(self.max_order, len(candidate))
+        for order in range(limit, -1, -1):
+            suffix = candidate[-order:] if order else ()
+            state = self._resolve_state(suffix)
+            if state in self.states:
+                return state
+        return ()
 
     def outgoing(self, state: Iterable[Symbol] | Context) -> tuple[Edge, ...]:
         """Outgoing edges for a context, or an empty tuple for dead contexts."""
 
-        return self._edges.get(_as_context(state), ())
+        return self._edges.get(self._resolve_state(state), ())
+
+    def _resolve_state(self, state: Iterable[Symbol] | Context) -> Context:
+        context = _as_context(state)
+        return self._alias_to_state.get(context, context)
 
     def edge_count(self) -> int:
         return sum(len(edges) for edges in self._edges.values())

@@ -22,6 +22,7 @@ from .acceptors import (
     transition_weight as regular_transition_weight,
 )
 from .context import Context, Symbol, _as_context
+from .minimization import minimize_fixed_order_graph, minimize_fixed_order_graphs
 from .positional_bp import (
     AllowedForbiddenSymbols,
     PositionConstraint,
@@ -237,6 +238,7 @@ class OrderStackModel:
         self.forbidden_symbols = frozenset(forbidden_symbols)
         self.alphabet = frozenset(symbol for counter in self.counts.values() for symbol in counter)
         self._graph_cache: dict[int, FixedOrderContextGraph] = {}
+        self._minimized_graph_cache: dict[int, FixedOrderContextGraph] = {}
 
     @classmethod
     def from_sequences(
@@ -308,6 +310,14 @@ class OrderStackModel:
         self._graph_cache[order] = graph
         return graph
 
+    def compile_minimized_graph(self, order: int) -> "FixedOrderContextGraph":
+        cached = self._minimized_graph_cache.get(order)
+        if cached is not None:
+            return cached
+        graph = minimize_fixed_order_graph(self.compile_graph(order))
+        self._minimized_graph_cache[order] = graph
+        return graph
+
 
 class FixedOrderContextGraph:
     def __init__(self, order: int) -> None:
@@ -315,6 +325,8 @@ class FixedOrderContextGraph:
         self.contexts: list[Context] = []
         self.context_to_id: dict[Context, int] = {}
         self.outgoing: list[list[StackEdge]] = []
+        self.state_aliases: tuple[tuple[Context, ...], ...] = ()
+        self.quotient_stats: object | None = None
 
     @classmethod
     def from_model(cls, model: OrderStackModel, *, order: int) -> "FixedOrderContextGraph":
@@ -502,9 +514,10 @@ class OrderStackBPResult:
             if choice is None:
                 raise ValueError("No context path satisfies the constraints at any order.")
             edge = choice.edge
+            trace_context = tuple(history[-choice.candidate_set.order :])
             output.append(edge.symbol)
             history.append(edge.symbol)
-            trace.append(_sample_step(position, choice))
+            trace.append(_sample_step(position, choice, context=trace_context))
 
         return tuple(output), tuple(trace)
 
@@ -641,6 +654,7 @@ def prepare_order_stack_bp(
     constraints: PositionConstraints | None = None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
+    minimize_source_graphs: bool = False,
 ) -> OrderStackBPPlan:
     """Prepare prefix-independent positional order-stack backward messages."""
 
@@ -654,7 +668,10 @@ def prepare_order_stack_bp(
     )
     active_policy = policy or SingletonAvoidingBackoffPolicy()
 
-    graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
+    graphs = _compile_materialized_source_graphs(
+        model,
+        minimize_source_graphs=minimize_source_graphs,
+    )
     backwards = {
         order: _backward_messages(
             graph,
@@ -684,6 +701,7 @@ def run_order_stack_bp(
     constraints: PositionConstraints | None = None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
+    minimize_source_graphs: bool = False,
 ) -> OrderStackBPResult:
     if not prefix:
         raise ValueError("order-stack BP requires a non-empty prefix")
@@ -693,6 +711,7 @@ def run_order_stack_bp(
         constraints=constraints,
         allowed_forbidden_symbols=allowed_forbidden_symbols,
         policy=policy,
+        minimize_source_graphs=minimize_source_graphs,
     ).for_prefix(prefix)
 
 
@@ -742,15 +761,20 @@ def _backward_messages(
     return backward
 
 
-def _sample_step(position: int, choice: CandidateChoice) -> OrderSampleStep:
+def _sample_step(
+    position: int,
+    choice: CandidateChoice,
+    *,
+    context: Context | None = None,
+) -> OrderSampleStep:
     decision = choice.decision
     graph = choice.candidate_set.graph
-    context = graph.contexts[choice.candidate_set.state]
+    trace_context = graph.contexts[choice.candidate_set.state] if context is None else context
     return OrderSampleStep(
         position=position,
         symbol=choice.edge.symbol,
         order=choice.edge.order,
-        context=context,
+        context=trace_context,
         policy=decision.policy_name,
         candidate_orders=decision.candidate_orders,
         candidate_counts=decision.candidate_counts,
@@ -1069,10 +1093,11 @@ class RegularOrderStackBPResult:
             next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
             if next_acceptor_state is None:
                 raise RuntimeError("selected edge is not accepted by the DFA")
+            trace_context = tuple(history[-choice.candidate_set.order :])
             output.append(edge.symbol)
             history.append(edge.symbol)
             acceptor_state = next_acceptor_state
-            trace.append(_sample_step(position, choice))
+            trace.append(_sample_step(position, choice, context=trace_context))
 
         if not self.acceptor.is_accepting(acceptor_state):
             raise RuntimeError("order-stack policy ended in a non-accepting DFA state")
@@ -1303,6 +1328,7 @@ def prepare_order_stack_dfa_bp(
     start_acceptor_state: Hashable | None = None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
+    minimize_source_graphs: bool = False,
 ) -> RegularOrderStackBPPlan:
     return prepare_order_stack_masked_dfa_bp(
         model,
@@ -1312,6 +1338,7 @@ def prepare_order_stack_dfa_bp(
         start_acceptor_state=start_acceptor_state,
         allowed_forbidden_symbols=allowed_forbidden_symbols,
         policy=policy,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 
@@ -1324,6 +1351,7 @@ def prepare_order_stack_masked_dfa_bp(
     start_acceptor_state: Hashable | None = None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
+    minimize_source_graphs: bool = False,
 ) -> RegularOrderStackBPPlan:
     """Prepare reusable regular order-stack backward caches without a prefix."""
 
@@ -1337,7 +1365,11 @@ def prepare_order_stack_masked_dfa_bp(
     )
     active_policy = policy or LongestFeasiblePolicy()
     acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
-    graphs = _compile_graphs_for_prefixless_plan(model, length=length)
+    graphs = _compile_graphs_for_prefixless_plan(
+        model,
+        length=length,
+        minimize_source_graphs=minimize_source_graphs,
+    )
     backwards = {
         order: _RegularBackwardCache(
             graph,
@@ -1366,16 +1398,42 @@ def _compile_graphs_for_prefixless_plan(
     model: OrderStackModel,
     *,
     length: int,
+    minimize_source_graphs: bool = False,
 ) -> dict[int, FixedOrderContextGraph]:
     compile_graphs = getattr(model, "compile_graphs_for_plan", None)
     if compile_graphs is not None:
-        return compile_graphs(length=length)
+        graphs = compile_graphs(length=length)
+        if minimize_source_graphs:
+            graphs = minimize_fixed_order_graphs(graphs)
+        return graphs
     if getattr(model, "compile_graphs_for_prefix", None) is not None:
         raise ValueError(
             "prefix-independent order-stack plans require prefix-independent graph "
             "compilation; implement compile_graphs_for_plan on the model"
         )
-    return {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
+    graphs = _compile_materialized_source_graphs(
+        model,
+        minimize_source_graphs=minimize_source_graphs,
+    )
+    return graphs
+
+
+def _compile_materialized_source_graphs(
+    model: OrderStackModel,
+    *,
+    minimize_source_graphs: bool = False,
+) -> dict[int, FixedOrderContextGraph]:
+    if minimize_source_graphs:
+        compile_minimized = getattr(model, "compile_minimized_graph", None)
+        if compile_minimized is not None:
+            return {
+                order: compile_minimized(order)
+                for order in range(1, model.max_order + 1)
+            }
+    graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
+    if minimize_source_graphs:
+        graphs = minimize_fixed_order_graphs(graphs)
+    return graphs
 
 
 def run_order_stack_dfa_bp(
@@ -1387,6 +1445,7 @@ def run_order_stack_dfa_bp(
     start_acceptor_state: Hashable | None = None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
+    minimize_source_graphs: bool = False,
 ) -> RegularOrderStackBPResult:
     return _run_order_stack_regular_bp(
         model,
@@ -1397,6 +1456,7 @@ def run_order_stack_dfa_bp(
         constraints=None,
         allowed_forbidden_symbols=allowed_forbidden_symbols,
         policy=policy,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 
@@ -1410,6 +1470,7 @@ def run_order_stack_masked_dfa_bp(
     start_acceptor_state: Hashable | None = None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
     policy: OrderPolicy | None = None,
+    minimize_source_graphs: bool = False,
 ) -> RegularOrderStackBPResult:
     """Run regular order-stack BP with additional time-indexed symbol masks."""
 
@@ -1422,6 +1483,7 @@ def run_order_stack_masked_dfa_bp(
         constraints=constraints,
         allowed_forbidden_symbols=allowed_forbidden_symbols,
         policy=policy,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 
@@ -1435,6 +1497,7 @@ def _run_order_stack_regular_bp(
     constraints: PositionConstraints | None,
     allowed_forbidden_symbols: AllowedForbiddenSymbols | None,
     policy: OrderPolicy | None,
+    minimize_source_graphs: bool = False,
 ) -> RegularOrderStackBPResult:
     if length < 0:
         raise ValueError("length must be non-negative")
@@ -1450,9 +1513,14 @@ def _run_order_stack_regular_bp(
     acceptor0 = acceptor.start_state if start_acceptor_state is None else start_acceptor_state
     compile_graphs = getattr(model, "compile_graphs_for_prefix", None)
     if compile_graphs is None:
-        graphs = {order: model.compile_graph(order) for order in range(1, model.max_order + 1)}
+        graphs = _compile_materialized_source_graphs(
+            model,
+            minimize_source_graphs=minimize_source_graphs,
+        )
     else:
         graphs = compile_graphs(prefix=prefix, length=length)
+    if minimize_source_graphs and compile_graphs is not None:
+        graphs = minimize_fixed_order_graphs(graphs)
     backwards = {
         order: _RegularBackwardCache(
             graph,

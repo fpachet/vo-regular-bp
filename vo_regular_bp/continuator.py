@@ -47,6 +47,7 @@ def prepare_continuation_backend(
     end_event: EventT | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> EventOrderStackBackend[EventT]:
     """Prepare a constrained order-stack backend in Continuator vocabulary.
 
@@ -83,6 +84,7 @@ def prepare_continuation_backend(
         end_event=end_event,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
+        minimize_source_graphs=minimize_source_graphs,
     )
     return plan.for_prefix(prefix_tuple)
 
@@ -102,6 +104,7 @@ def prepare_continuation_plan(
     end_event: EventT | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> EventOrderStackPlan[EventT]:
     """Prepare a reusable Continuator-shaped plan without binding a prefix."""
 
@@ -129,6 +132,7 @@ def prepare_continuation_plan(
         end_event=end_event,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
+        minimize_source_graphs=minimize_source_graphs,
     )
 
 

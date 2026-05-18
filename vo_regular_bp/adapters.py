@@ -190,6 +190,7 @@ def prepare_constrained_order_stack_from_events(
     end_event: EventT | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> EventOrderStackBackend[EventT]:
     """Build and prepare a constrained order-stack backend from event sequences."""
 
@@ -204,6 +205,7 @@ def prepare_constrained_order_stack_from_events(
         end_event=end_event,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
+        minimize_source_graphs=minimize_source_graphs,
     )
     return plan.for_prefix(prefix)
 
@@ -220,6 +222,7 @@ def prepare_constrained_order_stack_plan_from_events(
     end_event: EventT | None = None,
     alphabet: Iterable[Symbol] | None = None,
     prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
 ) -> EventOrderStackPlan[EventT]:
     """Build an order-stack model from events and prepare a prefixless plan."""
 
@@ -237,6 +240,7 @@ def prepare_constrained_order_stack_plan_from_events(
         policy=policy,
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
+        minimize_source_graphs=minimize_source_graphs,
     )
     return EventOrderStackPlan(plan=plan, codec=codec)
 
