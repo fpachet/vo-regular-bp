@@ -252,6 +252,26 @@ source context and transition, such as relative motion. If both are supplied,
 symbols; projections only control the compatibility test and recursive
 successor matching.
 
+Within one `alergia_merge(...)` call, projected continuation counts, dominant
+projected successor labels, and recursive pair-compatibility decisions are
+cached. This is most useful when a projection makes many source states look
+compatible enough to require recursive checks. It preserves the same merge
+criterion and metadata as the uncached implementation.
+
+For quick compression diagnostics, use:
+
+```bash
+python scripts/diagnose_source_merging.py data/bach_prelude_c_major_pitches.txt \
+  --max-order 6 \
+  --projection interval \
+  --alpha 0.01 \
+  --min-support 10
+```
+
+The script reports raw source size, exact-minimized size, ALERGIA-merged size,
+edge counts, compression ratios, projection kind, and optional held-out average
+log probability.
+
 ## Exactness Notes
 
 `run_bp(...)` samples exactly from one probabilistic context graph conditioned

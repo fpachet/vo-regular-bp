@@ -61,6 +61,15 @@ class AlergiaMergeMetadata:
         }
 
 
+@dataclass(frozen=True)
+class _ProjectionCache:
+    counts: dict[Context, dict[Hashable, float]]
+    dominant_next: dict[Context, dict[Hashable, Context]]
+
+
+_PairMemo = dict[tuple[Context, Context], tuple[bool, tuple[tuple[Context, Context], ...]]]
+
+
 def alergia_merge(
     graph: ContextGraph,
     *,
@@ -92,12 +101,14 @@ def alergia_merge(
         symbol_projection=symbol_projection,
         transition_projection=transition_projection,
     )
+    projection_cache = _precompute_projection_cache(graph, counts, project)
     supports = {
         state: float(sum(symbol_counts.values()))
         for state, symbol_counts in counts.items()
     }
     states = tuple(sorted(graph.states, key=_context_sort_key))
     union = _UnionFind(states)
+    pair_memo: _PairMemo = {}
 
     for state in states:
         if supports.get(state, 0.0) < min_support:
@@ -119,7 +130,8 @@ def alergia_merge(
                 alpha=float(alpha),
                 min_support=float(min_support),
                 recursive=recursive,
-                transition_projection=project,
+                projection_cache=projection_cache,
+                pair_memo=pair_memo,
             )
             if compatible:
                 union.union(state, members[0])
@@ -156,7 +168,8 @@ def _compatible_with_class(
     alpha: float,
     min_support: float,
     recursive: bool,
-    transition_projection: Callable[[Context, Symbol, Edge], Hashable],
+    projection_cache: _ProjectionCache,
+    pair_memo: _PairMemo,
 ) -> tuple[bool, list[tuple[Context, Context]]]:
     pairs: list[tuple[Context, Context]] = []
     for member in members:
@@ -169,7 +182,8 @@ def _compatible_with_class(
             alpha=alpha,
             min_support=min_support,
             recursive=recursive,
-            transition_projection=transition_projection,
+            projection_cache=projection_cache,
+            pair_memo=pair_memo,
             seen=set(),
         )
         if not compatible:
@@ -188,7 +202,8 @@ def _compatible_pair(
     alpha: float,
     min_support: float,
     recursive: bool,
-    transition_projection: Callable[[Context, Symbol, Edge], Hashable],
+    projection_cache: _ProjectionCache,
+    pair_memo: _PairMemo,
     seen: set[tuple[Context, Context]],
 ) -> tuple[bool, list[tuple[Context, Context]]]:
     if left == right:
@@ -196,6 +211,12 @@ def _compatible_pair(
     pair = (left, right) if _context_sort_key(left) <= _context_sort_key(right) else (right, left)
     if pair in seen:
         return True, []
+    cache_positive = not seen
+    cached = pair_memo.get(pair)
+    if cached is not None:
+        compatible, pairs = cached
+        if not compatible or cache_positive:
+            return compatible, list(pairs)
     seen.add(pair)
 
     left_counts = counts.get(left, {})
@@ -203,35 +224,25 @@ def _compatible_pair(
     left_support = supports.get(left, 0.0)
     right_support = supports.get(right, 0.0)
     if left_support == 0.0 and right_support == 0.0 and not left_counts and not right_counts:
-        return True, [pair]
+        return _cache_pair_result(pair_memo, pair, True, [pair], cache_positive)
     if left_support <= 0.0 or right_support <= 0.0:
-        return False, []
+        return _cache_pair_result(pair_memo, pair, False, [], cache_positive)
     if left_support < min_support or right_support < min_support:
-        return False, []
+        return _cache_pair_result(pair_memo, pair, False, [], cache_positive)
 
-    left_projected = _projected_counts(graph, counts, left, transition_projection)
-    right_projected = _projected_counts(graph, counts, right, transition_projection)
+    left_projected = projection_cache.counts.get(left, {})
+    right_projected = projection_cache.counts.get(right, {})
     bound = _hoeffding_bound(left_support, right_support, alpha)
     for projected_symbol in set(left_projected) | set(right_projected):
         left_probability = left_projected.get(projected_symbol, 0.0) / left_support
         right_probability = right_projected.get(projected_symbol, 0.0) / right_support
         if abs(left_probability - right_probability) > bound:
-            return False, []
+            return _cache_pair_result(pair_memo, pair, False, [], cache_positive)
 
     pairs = [pair]
     if recursive:
-        left_next = _dominant_next_by_projected_symbol(
-            graph,
-            counts,
-            left,
-            transition_projection,
-        )
-        right_next = _dominant_next_by_projected_symbol(
-            graph,
-            counts,
-            right,
-            transition_projection,
-        )
+        left_next = projection_cache.dominant_next.get(left, {})
+        right_next = projection_cache.dominant_next.get(right, {})
         for projected_symbol in set(left_next) & set(right_next):
             compatible, child_pairs = _compatible_pair(
                 graph,
@@ -242,13 +253,14 @@ def _compatible_pair(
                 alpha=alpha,
                 min_support=min_support,
                 recursive=True,
-                transition_projection=transition_projection,
+                projection_cache=projection_cache,
+                pair_memo=pair_memo,
                 seen=seen,
             )
             if not compatible:
-                return False, []
+                return _cache_pair_result(pair_memo, pair, False, [], cache_positive)
             pairs.extend(child_pairs)
-    return True, pairs
+    return _cache_pair_result(pair_memo, pair, True, pairs, cache_positive)
 
 
 def _build_merged_graph(
@@ -411,41 +423,46 @@ def _state_counts(graph: ContextGraph) -> dict[Context, dict[Symbol, float]]:
     return result
 
 
-def _projected_counts(
+def _precompute_projection_cache(
     graph: ContextGraph,
     counts: dict[Context, dict[Symbol, float]],
-    state: Context,
     transition_projection: Callable[[Context, Symbol, Edge], Hashable],
-) -> dict[Hashable, float]:
-    projected: Counter[Hashable] = Counter()
-    state_counts = counts.get(state, {})
-    for edge in graph.outgoing(state):
-        count = state_counts.get(edge.symbol, 0.0)
-        if count > 0.0:
-            projected[transition_projection(state, edge.symbol, edge)] += count
-    return dict(projected)
+) -> _ProjectionCache:
+    projected_counts: dict[Context, dict[Hashable, float]] = {}
+    dominant_next: dict[Context, dict[Hashable, Context]] = {}
+    for state in graph.states:
+        state_projected: Counter[Hashable] = Counter()
+        destination_counts: dict[Hashable, Counter[Context]] = defaultdict(Counter)
+        state_counts = counts.get(state, {})
+        for edge in graph.outgoing(state):
+            count = state_counts.get(edge.symbol, 0.0)
+            if count <= 0.0:
+                continue
+            projected_symbol = transition_projection(state, edge.symbol, edge)
+            state_projected[projected_symbol] += count
+            destination_counts[projected_symbol][edge.next_state] += count
+        projected_counts[state] = dict(state_projected)
+        dominant_next[state] = {
+            projected_symbol: max(
+                destinations,
+                key=lambda candidate: (destinations[candidate], repr(candidate)),
+            )
+            for projected_symbol, destinations in destination_counts.items()
+        }
+    return _ProjectionCache(counts=projected_counts, dominant_next=dominant_next)
 
 
-def _dominant_next_by_projected_symbol(
-    graph: ContextGraph,
-    counts: dict[Context, dict[Symbol, float]],
-    state: Context,
-    transition_projection: Callable[[Context, Symbol, Edge], Hashable],
-) -> dict[Hashable, Context]:
-    candidates: dict[Hashable, Counter[Context]] = defaultdict(Counter)
-    state_counts = counts.get(state, {})
-    for edge in graph.outgoing(state):
-        count = state_counts.get(edge.symbol, 0.0)
-        if count <= 0.0:
-            continue
-        candidates[transition_projection(state, edge.symbol, edge)][edge.next_state] += count
-    return {
-        projected_symbol: max(
-            destination_counts,
-            key=lambda candidate: (destination_counts[candidate], repr(candidate)),
-        )
-        for projected_symbol, destination_counts in candidates.items()
-    }
+def _cache_pair_result(
+    pair_memo: _PairMemo,
+    pair: tuple[Context, Context],
+    compatible: bool,
+    pairs: list[tuple[Context, Context]],
+    cache_positive: bool,
+) -> tuple[bool, list[tuple[Context, Context]]]:
+    frozen_pairs = tuple(pairs)
+    if not compatible or cache_positive:
+        pair_memo[pair] = (compatible, frozen_pairs)
+    return compatible, list(frozen_pairs)
 
 
 def _hoeffding_bound(left_support: float, right_support: float, alpha: float) -> float:

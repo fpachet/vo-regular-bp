@@ -188,6 +188,43 @@ Effect:
   later prefixes reuse overlapping `(time, context, DFA-state)` messages;
 - preserves the existing prefix-based API as a convenience wrapper.
 
+### Experimental ALERGIA Merge Caching
+
+Status: implemented.
+
+The experimental `vo_regular_bp.experimental.alergia_merge(...)` path now
+caches work that is repeated during approximate source-state merging:
+
+- projected continuation counts per source state;
+- dominant successor state per projected transition label;
+- recursive pair-compatibility results within one merge call.
+
+This is generic and projection-agnostic. A client such as Transformator still
+provides the semantics through `symbol_projection` or
+`transition_projection(state, symbol, edge)`, while BP remains exact with
+respect to the resulting merged source graph.
+
+Local CPU benchmark against the previous uncached implementation:
+
+| case | before median | after median | speedup |
+|---|---:|---:|---:|
+| Bach order 6, identity | 0.212 s | 0.210 s | 1.01x |
+| Bach order 6, interval projection | 0.168 s | 0.164 s | 1.03x |
+| random sparse graph, pitch-class projection | 0.934 s | 0.924 s | 1.01x |
+| dense compatible projected graph, 120x40 | 1.255 s | 0.677 s | 1.86x |
+| dense compatible projected graph, 180x50 | 3.572 s | 1.928 s | 1.85x |
+
+Interpretation:
+
+- small sparse corpora often reject candidate pairs cheaply, so the visible CPU
+  gain is small;
+- projection-heavy sweeps with many statistically compatible states benefit
+  substantially because repeated projected counts and recursive pair checks are
+  avoided;
+- the next generic ALERGIA optimization should probably reduce candidate pairs
+  before testing them, for example with coarse signature prefiltering and
+  eligible-root filtering.
+
 ## Tried And Rejected
 
 ### Array-Backed Graph Edges

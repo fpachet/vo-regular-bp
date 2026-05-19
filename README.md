@@ -189,6 +189,12 @@ supplies domain semantics for similarity; `transition_projection(state, symbol,
 edge)` handles context-relative abstractions and takes precedence when both are
 provided. The default compares raw emitted symbols.
 
+The ALERGIA implementation is optimized for projected comparisons by caching
+projected continuation counts, projected successor labels, and recursive
+pair-compatibility decisions within one merge call. These are internal
+optimizations only: they do not change the explicit API or make approximate
+merging automatic.
+
 ### Positional BP
 
 `run_positional_bp(...)` is a no-DFA specialization for fixed-horizon
