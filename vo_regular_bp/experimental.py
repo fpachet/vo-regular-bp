@@ -7,9 +7,10 @@ the source distribution, unlike exact minimization in :mod:`vo_regular_bp.minimi
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
 import math
+import time
 from typing import Any
 
 from .context import Context, ContextGraph, Edge, Symbol
@@ -58,6 +59,116 @@ class AlergiaMergeMetadata:
             "symbol_projection": self.symbol_projection,
             "transition_projection": self.transition_projection,
             "projection_kind": self.projection_kind,
+        }
+
+
+@dataclass(frozen=True)
+class AlergiaFixedOrderMergeMetadata:
+    """Diagnostics for an experimental ALERGIA merge of one fixed-order graph."""
+
+    method: str
+    order: int
+    alpha: float
+    min_support: float
+    recursive: bool
+    original_state_count: int
+    merged_state_count: int
+    original_edge_count: int
+    merged_edge_count: int
+    state_to_class: dict[Context, int]
+    classes: tuple[tuple[Context, ...], ...]
+    conflicting_symbol_destinations: int = 0
+    conflicting_edge_orders: int = 0
+    symbol_projection: str | None = None
+    transition_projection: str | None = None
+    projection_kind: str = "identity"
+    merge_time_seconds: float = 0.0
+
+    @property
+    def state_compression_ratio(self) -> float:
+        return _ratio(self.original_state_count, self.merged_state_count)
+
+    @property
+    def edge_compression_ratio(self) -> float:
+        return _ratio(self.original_edge_count, self.merged_edge_count)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "method": self.method,
+            "order": self.order,
+            "alpha": self.alpha,
+            "min_support": self.min_support,
+            "recursive": self.recursive,
+            "original_state_count": self.original_state_count,
+            "merged_state_count": self.merged_state_count,
+            "original_edge_count": self.original_edge_count,
+            "merged_edge_count": self.merged_edge_count,
+            "state_compression_ratio": self.state_compression_ratio,
+            "edge_compression_ratio": self.edge_compression_ratio,
+            "conflicting_symbol_destinations": self.conflicting_symbol_destinations,
+            "conflicting_edge_orders": self.conflicting_edge_orders,
+            "symbol_projection": self.symbol_projection,
+            "transition_projection": self.transition_projection,
+            "projection_kind": self.projection_kind,
+            "merge_time_seconds": self.merge_time_seconds,
+        }
+
+
+@dataclass(frozen=True)
+class AlergiaOrderStackMergeMetadata:
+    """Diagnostics for an experimental ALERGIA-merged order-stack model."""
+
+    method: str
+    alpha: float
+    min_support: float
+    recursive: bool
+    orders: dict[int, AlergiaFixedOrderMergeMetadata]
+
+    @property
+    def original_state_count(self) -> int:
+        return sum(metadata.original_state_count for metadata in self.orders.values())
+
+    @property
+    def merged_state_count(self) -> int:
+        return sum(metadata.merged_state_count for metadata in self.orders.values())
+
+    @property
+    def original_edge_count(self) -> int:
+        return sum(metadata.original_edge_count for metadata in self.orders.values())
+
+    @property
+    def merged_edge_count(self) -> int:
+        return sum(metadata.merged_edge_count for metadata in self.orders.values())
+
+    @property
+    def merge_time_seconds(self) -> float:
+        return sum(metadata.merge_time_seconds for metadata in self.orders.values())
+
+    @property
+    def state_compression_ratio(self) -> float:
+        return _ratio(self.original_state_count, self.merged_state_count)
+
+    @property
+    def edge_compression_ratio(self) -> float:
+        return _ratio(self.original_edge_count, self.merged_edge_count)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "method": self.method,
+            "alpha": self.alpha,
+            "min_support": self.min_support,
+            "recursive": self.recursive,
+            "original_state_count": self.original_state_count,
+            "merged_state_count": self.merged_state_count,
+            "original_edge_count": self.original_edge_count,
+            "merged_edge_count": self.merged_edge_count,
+            "state_compression_ratio": self.state_compression_ratio,
+            "edge_compression_ratio": self.edge_compression_ratio,
+            "merge_time_seconds": self.merge_time_seconds,
+            "orders": {
+                order: metadata.as_dict()
+                for order, metadata in sorted(self.orders.items())
+            },
         }
 
 
@@ -148,10 +259,148 @@ def alergia_merge(
     )
 
 
-def alergia_metadata(graph: ContextGraph) -> AlergiaMergeMetadata | None:
-    """Return ALERGIA metadata if ``graph`` was produced by :func:`alergia_merge`."""
+def alergia_metadata(graph: object) -> (
+    AlergiaMergeMetadata
+    | AlergiaFixedOrderMergeMetadata
+    | AlergiaOrderStackMergeMetadata
+    | None
+):
+    """Return ALERGIA metadata if ``graph`` was produced by an experimental merge."""
 
     return getattr(graph, "alergia_metadata", None)
+
+
+def alergia_merge_fixed_order_graph(
+    graph: object,
+    *,
+    alpha: float = 0.01,
+    min_support: int | float = 10,
+    recursive: bool = True,
+    symbol_projection: Callable[[Symbol], Hashable] | None = None,
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable] | None = None,
+    continuation_counts: Mapping[Context, Mapping[Symbol, int | float]] | None = None,
+) -> object:
+    """Return an experimental ALERGIA-merged fixed-order order-stack graph.
+
+    The merge is applied to one unconstrained fixed-order source graph. The
+    result is still a ``FixedOrderContextGraph`` and can be used by the existing
+    order-stack BP backends without a special sampling path.
+    """
+
+    started = time.perf_counter()
+    context_graph = _fixed_order_to_context_graph(
+        graph,
+        continuation_counts=continuation_counts,
+    )
+    merged_context_graph = alergia_merge(
+        context_graph,
+        alpha=alpha,
+        min_support=min_support,
+        recursive=recursive,
+        symbol_projection=symbol_projection,
+        transition_projection=transition_projection,
+    )
+    merged_graph, conflicting_edge_orders = _context_graph_to_fixed_order_graph(
+        merged_context_graph,
+        graph,
+    )
+    source_metadata = alergia_metadata(merged_context_graph)
+    if not isinstance(source_metadata, AlergiaMergeMetadata):
+        raise RuntimeError("missing ContextGraph ALERGIA metadata")
+    merged_graph.alergia_metadata = AlergiaFixedOrderMergeMetadata(
+        method="alergia_fixed_order",
+        order=int(graph.order),
+        alpha=float(alpha),
+        min_support=float(min_support),
+        recursive=recursive,
+        original_state_count=source_metadata.original_state_count,
+        merged_state_count=source_metadata.merged_state_count,
+        original_edge_count=source_metadata.original_edge_count,
+        merged_edge_count=source_metadata.merged_edge_count,
+        state_to_class=source_metadata.state_to_class,
+        classes=source_metadata.classes,
+        conflicting_symbol_destinations=source_metadata.conflicting_symbol_destinations,
+        conflicting_edge_orders=conflicting_edge_orders,
+        symbol_projection=source_metadata.symbol_projection,
+        transition_projection=source_metadata.transition_projection,
+        projection_kind=source_metadata.projection_kind,
+        merge_time_seconds=time.perf_counter() - started,
+    )
+    return merged_graph
+
+
+def alergia_merge_order_stack_model(
+    model: object,
+    *,
+    alpha: float = 0.01,
+    min_support: int | float = 10,
+    recursive: bool = True,
+    symbol_projection: Callable[[Symbol], Hashable] | None = None,
+    transition_projection: Callable[[Context, Symbol, Edge], Hashable] | None = None,
+) -> "AlergiaOrderStackModel":
+    """Return an experimental order-stack model with ALERGIA-merged sources.
+
+    Each fixed-order graph is merged independently. The returned model exposes
+    the same ``compile_graph(order)`` interface used by the existing order-stack
+    BP preparation functions, so sampling APIs do not need a special path.
+    """
+
+    graphs = {}
+    metadata_by_order = {}
+    for order in range(1, int(model.max_order) + 1):
+        graph = model.compile_graph(order)
+        merged_graph = alergia_merge_fixed_order_graph(
+            graph,
+            alpha=alpha,
+            min_support=min_support,
+            recursive=recursive,
+            symbol_projection=symbol_projection,
+            transition_projection=transition_projection,
+            continuation_counts=_fixed_order_counts_from_model(model, graph),
+        )
+        graphs[order] = merged_graph
+        metadata = alergia_metadata(merged_graph)
+        if not isinstance(metadata, AlergiaFixedOrderMergeMetadata):
+            raise RuntimeError("missing fixed-order ALERGIA metadata")
+        metadata_by_order[order] = metadata
+
+    return AlergiaOrderStackModel(
+        base_model=model,
+        graphs=graphs,
+        metadata=AlergiaOrderStackMergeMetadata(
+            method="alergia_order_stack",
+            alpha=float(alpha),
+            min_support=float(min_support),
+            recursive=recursive,
+            orders=metadata_by_order,
+        ),
+    )
+
+
+class AlergiaOrderStackModel:
+    """Experimental order-stack model backed by ALERGIA-merged fixed-order graphs."""
+
+    def __init__(
+        self,
+        *,
+        base_model: object,
+        graphs: dict[int, object],
+        metadata: AlergiaOrderStackMergeMetadata,
+    ) -> None:
+        self.base_model = base_model
+        self.max_order = int(base_model.max_order)
+        self.forbidden_symbols = frozenset(getattr(base_model, "forbidden_symbols", ()))
+        self.alphabet = frozenset(getattr(base_model, "alphabet", ()))
+        self._graphs = dict(graphs)
+        self.alergia_metadata = metadata
+
+    def compile_graph(self, order: int) -> object:
+        if order < 1 or order > self.max_order:
+            raise ValueError(f"order must be between 1 and {self.max_order}")
+        return self._graphs[int(order)]
+
+    def compile_graphs_for_plan(self, *, length: int) -> dict[int, object]:
+        return dict(self._graphs)
 
 
 def _compatible_with_class(
@@ -397,6 +646,157 @@ def _build_merged_graph(
         projection_kind=projection_kind,
     )
     return merged
+
+
+def _fixed_order_to_context_graph(
+    graph: object,
+    *,
+    continuation_counts: Mapping[Context, Mapping[Symbol, int | float]] | None,
+) -> ContextGraph:
+    contexts = tuple(graph.contexts)
+    edges_by_state: dict[Context, list[Edge]] = {}
+    count_metadata: dict[Context, dict[Symbol, float]] = {}
+    state_supports: dict[Context, float] = {}
+
+    for state_id, context in enumerate(contexts):
+        raw_counts = continuation_counts.get(context) if continuation_counts is not None else None
+        support = (
+            float(sum(count for count in raw_counts.values() if count > 0))
+            if raw_counts is not None
+            else 1.0
+        )
+        if support <= 0.0 and graph.outgoing[state_id]:
+            support = 1.0
+        state_counts: dict[Symbol, float] = {}
+        state_edges: list[Edge] = []
+        for edge in graph.outgoing[state_id]:
+            count = (
+                float(raw_counts.get(edge.symbol, edge.probability * support))
+                if raw_counts is not None
+                else edge.probability * support
+            )
+            if count > 0.0:
+                state_counts[edge.symbol] = count
+            state_edges.append(
+                Edge(
+                    symbol=edge.symbol,
+                    probability=edge.probability,
+                    next_state=contexts[edge.dst],
+                    order_weights=((int(edge.order), 1.0),),
+                )
+            )
+        edges_by_state[context] = state_edges
+        count_metadata[context] = state_counts
+        state_supports[context] = float(sum(state_counts.values()))
+
+    start_state = contexts[0] if contexts else ()
+    context_graph = ContextGraph(
+        edges_by_state,
+        start_state=start_state,
+        max_order=int(graph.order),
+        validate=True,
+    )
+    alias_to_state = {
+        alias: contexts[state_id]
+        for alias, state_id in graph.context_to_id.items()
+        if state_id < len(contexts)
+    }
+    for state_id, aliases in enumerate(getattr(graph, "state_aliases", ())):
+        if state_id >= len(contexts):
+            continue
+        for alias in aliases:
+            alias_to_state[alias] = contexts[state_id]
+    context_graph._alias_to_state = alias_to_state
+    context_graph._continuation_counts = count_metadata
+    context_graph._state_supports = state_supports
+    return context_graph
+
+
+def _context_graph_to_fixed_order_graph(
+    merged: ContextGraph,
+    source_graph: object,
+) -> tuple[object, int]:
+    from .order_stack_bp import FixedOrderContextGraph, StackEdge
+
+    metadata = alergia_metadata(merged)
+    if not isinstance(metadata, AlergiaMergeMetadata):
+        raise RuntimeError("missing ContextGraph ALERGIA metadata")
+
+    fixed = FixedOrderContextGraph(int(source_graph.order))
+    representatives = [class_members[0] for class_members in metadata.classes]
+    fixed.contexts = representatives
+    fixed.context_to_id = {
+        context: state_id
+        for state_id, context in enumerate(representatives)
+    }
+    fixed.outgoing = [[] for _context in representatives]
+
+    aliases: list[set[Context]] = [set(class_members) for class_members in metadata.classes]
+    for alias, resolved in getattr(merged, "_alias_to_state", {}).items():
+        state_id = fixed.context_to_id.get(resolved)
+        if state_id is None:
+            continue
+        fixed.context_to_id[alias] = state_id
+        aliases[state_id].add(alias)
+    fixed.state_aliases = tuple(
+        tuple(sorted(group, key=_context_sort_key))
+        for group in aliases
+    )
+
+    conflicting_edge_orders = 0
+    for src, context in enumerate(fixed.contexts):
+        for edge in merged.outgoing(context):
+            order, has_conflict = _dominant_order(edge.order_weights, int(source_graph.order))
+            if has_conflict:
+                conflicting_edge_orders += 1
+            fixed.outgoing[src].append(
+                StackEdge(
+                    src=src,
+                    dst=fixed.context_to_id[edge.next_state],
+                    symbol=edge.symbol,
+                    probability=edge.probability,
+                    order=order,
+                )
+            )
+    return fixed, conflicting_edge_orders
+
+
+def _fixed_order_counts_from_model(
+    model: object,
+    graph: object,
+) -> dict[Context, dict[Symbol, float]] | None:
+    model_counts = getattr(model, "counts", None)
+    longest_available_suffix = getattr(model, "longest_available_suffix", None)
+    if not isinstance(model_counts, Mapping) or longest_available_suffix is None:
+        return None
+
+    result: dict[Context, dict[Symbol, float]] = {}
+    for state_id, context in enumerate(graph.contexts):
+        suffix = longest_available_suffix(context, max_order=int(graph.order))
+        suffix_counts = model_counts.get(suffix, {}) if suffix is not None else {}
+        state_counts = {
+            edge.symbol: float(suffix_counts.get(edge.symbol, 0.0))
+            for edge in graph.outgoing[state_id]
+            if suffix_counts.get(edge.symbol, 0.0) > 0.0
+        }
+        if not state_counts and graph.outgoing[state_id]:
+            state_counts = {
+                edge.symbol: float(edge.probability)
+                for edge in graph.outgoing[state_id]
+                if edge.probability > 0.0
+            }
+        result[context] = state_counts
+    return result
+
+
+def _dominant_order(
+    order_weights: tuple[tuple[int, float], ...],
+    default_order: int,
+) -> tuple[int, bool]:
+    if not order_weights:
+        return default_order, False
+    order, _weight = max(order_weights, key=lambda item: (item[1], item[0]))
+    return int(order), len(order_weights) > 1
 
 
 def _state_counts(graph: ContextGraph) -> dict[Context, dict[Symbol, float]]:

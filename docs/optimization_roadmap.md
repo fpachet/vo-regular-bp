@@ -439,11 +439,17 @@ Future abstraction work:
 
 - an explicit experimental ALERGIA-like source merge is available through
   `vo_regular_bp.experimental.alergia_merge`;
+- Continuator-style order stacks can use
+  `vo_regular_bp.experimental.alergia_merge_order_stack_model`, which merges
+  each fixed-order source graph independently before the ordinary order-stack
+  backend is prepared;
 - it deliberately merges statistically compatible continuation profiles to
   explore abstraction/generalization capacity;
 - clients can provide domain semantics with `symbol_projection` for emitted
   symbols or `transition_projection(state, symbol, edge)` for context-aware
   transition features while the merged graph continues to emit concrete symbols;
+- order-stack ALERGIA preserves original context aliases and the existing trace
+  shape, but traces describe the explicit merged source model;
 - this is a modeling feature, not an exact optimization, and is never enabled
   automatically.
 

@@ -275,6 +275,57 @@ The script reports raw source size, exact-minimized size, ALERGIA-merged size,
 edge counts, compression ratios, projection kind, and optional held-out average
 log probability.
 
+For Continuator-style order stacks, use the experimental wrapper before calling
+the normal backend:
+
+```python
+from vo_regular_bp import ConstraintSet, prepare_constrained_order_stack
+from vo_regular_bp.experimental import (
+    alergia_merge_order_stack_model,
+    alergia_metadata,
+)
+
+abstract_model = alergia_merge_order_stack_model(
+    model,
+    alpha=0.01,
+    min_support=10,
+    recursive=True,
+    transition_projection=lambda state, symbol, edge: (
+        symbol - state[-1]
+        if state and isinstance(state[-1], int) and isinstance(symbol, int)
+        else symbol
+    ),
+)
+
+backend = prepare_constrained_order_stack(
+    abstract_model,
+    ConstraintSet(positional={7: final_symbols}),
+    length=8,
+    prefix=prefix,
+)
+metadata = alergia_metadata(abstract_model)
+```
+
+`alergia_merge_order_stack_model(...)` materializes and merges each fixed-order
+source graph independently. It returns a model-like wrapper that exposes
+`compile_graph(order)`, so existing positional and regular order-stack
+preparation functions can use it without a special sampling path. Prefix
+aliases from original contexts are preserved, which means ordinary prefixes
+still resolve to the merged representative state. Trace objects and sampled
+order labels keep their existing shape, but they describe the merged source
+model rather than the literal training model.
+
+For lower-level experiments, `alergia_merge_fixed_order_graph(...)` applies the
+same operation to one materialized fixed-order graph. Supplying
+`continuation_counts` is recommended when `min_support` should reflect training
+support rather than normalized probabilities; `alergia_merge_order_stack_model`
+does this automatically for ordinary `OrderStackModel` instances.
+
+The per-order metadata reports raw and merged state/edge counts, class members,
+destination conflicts, edge-order conflicts, projection kind, and merge time.
+This is intended for abstraction experiments; it is not exact source
+minimization and is not enabled by default.
+
 ## Exactness Notes
 
 `run_bp(...)` samples exactly from one probabilistic context graph conditioned

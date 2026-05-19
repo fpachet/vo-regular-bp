@@ -1,7 +1,19 @@
 import math
 
-from vo_regular_bp import ContextGraph, positional_acceptor, run_bp
-from vo_regular_bp.experimental import alergia_merge, alergia_metadata
+from vo_regular_bp import (
+    ConstraintSet,
+    ContextGraph,
+    LongestFeasiblePolicy,
+    OrderStackModel,
+    positional_acceptor,
+    prepare_constrained_order_stack,
+    run_bp,
+)
+from vo_regular_bp.experimental import (
+    alergia_merge,
+    alergia_merge_order_stack_model,
+    alergia_metadata,
+)
 
 
 def test_alergia_does_not_merge_incompatible_distributions():
@@ -236,6 +248,93 @@ def test_alergia_transition_projection_takes_precedence_over_symbol_projection()
     assert metadata.symbol_projection == "<lambda>"
     assert metadata.transition_projection == "_interval_projection"
     assert metadata.state_to_class[("a", 60)] == metadata.state_to_class[("b", 72)]
+
+
+def test_alergia_order_stack_model_merges_each_order_with_projection():
+    model = OrderStackModel.from_sequences(
+        [(("a", 60, 62, 64))] * 20 + [(("b", 72, 74, 76))] * 20,
+        max_order=2,
+    )
+
+    raw = alergia_merge_order_stack_model(model, alpha=0.01, min_support=10)
+    projected = alergia_merge_order_stack_model(
+        model,
+        alpha=0.01,
+        min_support=10,
+        transition_projection=_interval_projection,
+    )
+
+    raw_metadata = alergia_metadata(raw)
+    projected_metadata = alergia_metadata(projected)
+    assert raw_metadata is not None
+    assert projected_metadata is not None
+    assert 1 in projected_metadata.orders
+    assert 2 in projected_metadata.orders
+
+    raw_order_2 = raw_metadata.orders[2]
+    projected_order_2 = projected_metadata.orders[2]
+    assert raw_order_2.state_to_class[("a", 60)] != raw_order_2.state_to_class[("b", 72)]
+    assert projected_order_2.state_to_class[("a", 60)] == projected_order_2.state_to_class[("b", 72)]
+    assert projected_order_2.state_to_class[(60, 62)] == projected_order_2.state_to_class[(72, 74)]
+    assert projected_order_2.projection_kind == "transition"
+    assert projected_order_2.transition_projection == "_interval_projection"
+    assert projected_order_2.merge_time_seconds >= 0.0
+
+    graph = projected.compile_graph(2)
+    assert graph.state_id(("a", 60)) == graph.state_id(("b", 72))
+    assert graph.state_id((60, 62)) == graph.state_id((72, 74))
+    for outgoing in graph.outgoing:
+        if outgoing:
+            assert math.isclose(sum(edge.probability for edge in outgoing), 1.0)
+
+
+def test_alergia_order_stack_model_runs_existing_backend_and_preserves_base_model():
+    model = OrderStackModel.from_sequences(
+        [(("a", 60, 62, 64))] * 20 + [(("b", 72, 74, 76))] * 20,
+        max_order=2,
+    )
+    original_order_2 = model.compile_graph(2)
+
+    merged_model = alergia_merge_order_stack_model(
+        model,
+        alpha=0.01,
+        min_support=10,
+        transition_projection=_interval_projection,
+    )
+    merged_order_2 = merged_model.compile_graph(2)
+
+    assert not hasattr(model, "alergia_metadata")
+    assert len(original_order_2.contexts) > len(merged_order_2.contexts)
+
+    backend = prepare_constrained_order_stack(
+        merged_model,
+        ConstraintSet(),
+        length=2,
+        prefix=("b", 72),
+        policy=LongestFeasiblePolicy(),
+    )
+    generated = backend.sample_with_orders(rng=0)
+    traced_sequence, trace = backend.sample_with_trace(rng=0)
+
+    assert len(generated.sequence) == 2
+    assert len(generated.orders) == 2
+    assert traced_sequence == generated.sequence
+    assert tuple(step.order for step in trace) == generated.orders
+    assert trace[0].context == ("b", 72)
+    assert backend.diagnostics.context_states == sum(
+        len(merged_model.compile_graph(order).contexts)
+        for order in range(1, merged_model.max_order + 1)
+    )
+
+    regular_backend = prepare_constrained_order_stack(
+        merged_model,
+        ConstraintSet(forbidden_substrings={(999,)}),
+        length=2,
+        prefix=("b", 72),
+        policy=LongestFeasiblePolicy(),
+    )
+    assert regular_backend.diagnostics.backend == "order_stack_regular"
+    assert len(regular_backend.sample(rng=1)) == 2
 
 
 def _interval_projection(state, symbol, _edge):

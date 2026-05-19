@@ -189,6 +189,36 @@ supplies domain semantics for similarity; `transition_projection(state, symbol,
 edge)` handles context-relative abstractions and takes precedence when both are
 provided. The default compares raw emitted symbols.
 
+Order-stack models can opt into the same experiment by merging each fixed-order
+source graph independently, then using the ordinary backend:
+
+```python
+from vo_regular_bp.experimental import alergia_merge_order_stack_model
+
+abstract_model = alergia_merge_order_stack_model(
+    model,
+    alpha=0.01,
+    min_support=10,
+    recursive=True,
+    transition_projection=lambda state, symbol, edge: (
+        symbol - state[-1]
+        if state and isinstance(state[-1], int) and isinstance(symbol, int)
+        else symbol
+    ),
+)
+
+backend = prepare_constrained_order_stack(
+    abstract_model,
+    constraints,
+    length=8,
+    prefix=prefix,
+)
+```
+
+This preserves the public order-stack sampling path and trace shape. It changes
+the source model explicitly: BP and order selection remain exact for the merged
+fixed-order graphs that are passed in.
+
 The ALERGIA implementation is optimized for projected comparisons by caching
 projected continuation counts, projected successor labels, and recursive
 pair-compatibility decisions within one merge call. It also tracks active
