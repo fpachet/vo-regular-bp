@@ -191,9 +191,10 @@ provided. The default compares raw emitted symbols.
 
 The ALERGIA implementation is optimized for projected comparisons by caching
 projected continuation counts, projected successor labels, and recursive
-pair-compatibility decisions within one merge call. These are internal
-optimizations only: they do not change the explicit API or make approximate
-merging automatic.
+pair-compatibility decisions within one merge call. It also tracks active
+merge classes incrementally instead of rebuilding class members during every
+candidate comparison. These are internal optimizations only: they do not change
+the explicit API or make approximate merging automatic.
 
 ### Positional BP
 

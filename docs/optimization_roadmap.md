@@ -199,28 +199,37 @@ caches work that is repeated during approximate source-state merging:
 - dominant successor state per projected transition label;
 - recursive pair-compatibility results within one merge call.
 
+It also tracks active merge classes incrementally:
+
+- class roots are kept in the same order as the previous full-scan
+  `_class_roots(...)` helper;
+- class members are kept in source-state order;
+- after a union, only the two affected member lists and active root list are
+  updated.
+
 This is generic and projection-agnostic. A client such as Transformator still
 provides the semantics through `symbol_projection` or
 `transition_projection(state, symbol, edge)`, while BP remains exact with
 respect to the resulting merged source graph.
 
-Local CPU benchmark against the previous uncached implementation:
+Local CPU benchmark:
 
-| case | before median | after median | speedup |
+| case | previous median | current median | speedup |
 |---|---:|---:|---:|
-| Bach order 6, identity | 0.212 s | 0.210 s | 1.01x |
-| Bach order 6, interval projection | 0.168 s | 0.164 s | 1.03x |
-| random sparse graph, pitch-class projection | 0.934 s | 0.924 s | 1.01x |
-| dense compatible projected graph, 120x40 | 1.255 s | 0.677 s | 1.86x |
-| dense compatible projected graph, 180x50 | 3.572 s | 1.928 s | 1.85x |
+| Bach order 6, interval projection | 0.169 s | 0.023 s | 7.33x |
+| unique self-loop states, 250 states | 0.586 s | 0.063 s | 9.30x |
+| unique self-loop states, 400 states | 2.287 s | 0.162 s | 14.12x |
+| identical self-loop states, 300 states | 0.189 s | 0.177 s | 1.07x |
+| identical self-loop states, 600 states | 0.776 s | 0.721 s | 1.08x |
 
 Interpretation:
 
-- small sparse corpora often reject candidate pairs cheaply, so the visible CPU
-  gain is small;
+- class tracking is the largest win when ALERGIA scans many active classes and
+  rejects candidate pairs cheaply;
 - projection-heavy sweeps with many statistically compatible states benefit
-  substantially because repeated projected counts and recursive pair checks are
-  avoided;
+  from the projected-count and recursive-pair caches;
+- workloads where almost every state immediately merges into one class are
+  dominated by class-member compatibility checks, so the gain is modest;
 - the next generic ALERGIA optimization should probably reduce candidate pairs
   before testing them, for example with coarse signature prefiltering and
   eligible-root filtering.

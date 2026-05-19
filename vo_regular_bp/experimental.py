@@ -107,20 +107,16 @@ def alergia_merge(
         for state, symbol_counts in counts.items()
     }
     states = tuple(sorted(graph.states, key=_context_sort_key))
-    union = _UnionFind(states)
+    classes = _ClassRegistry(states)
     pair_memo: _PairMemo = {}
 
     for state in states:
         if supports.get(state, 0.0) < min_support:
             continue
-        for root in _class_roots(union, states):
-            if union.find(state) == root:
+        for root in classes.roots():
+            if classes.find(state) == root:
                 break
-            members = [
-                member
-                for member in states
-                if union.find(member) == root
-            ]
+            members = classes.members(root)
             compatible, pairs = _compatible_with_class(
                 graph,
                 counts,
@@ -134,15 +130,15 @@ def alergia_merge(
                 pair_memo=pair_memo,
             )
             if compatible:
-                union.union(state, members[0])
+                classes.union(state, members[0])
                 for left, right in pairs:
-                    union.union(left, right)
+                    classes.union(left, right)
                 break
 
     return _build_merged_graph(
         graph,
         counts,
-        union,
+        classes.union_find,
         alpha=float(alpha),
         min_support=float(min_support),
         recursive=recursive,
@@ -470,16 +466,51 @@ def _hoeffding_bound(left_support: float, right_support: float, alpha: float) ->
     return math.sqrt(scale / left_support) + math.sqrt(scale / right_support)
 
 
-def _class_roots(union: "_UnionFind", states: tuple[Context, ...]) -> tuple[Context, ...]:
-    roots = []
-    seen = set()
-    for state in states:
-        root = union.find(state)
-        if root in seen:
-            continue
-        seen.add(root)
-        roots.append(root)
-    return tuple(roots)
+class _ClassRegistry:
+    def __init__(self, states: tuple[Context, ...]) -> None:
+        self.union_find = _UnionFind(states)
+        self._state_index = {state: index for index, state in enumerate(states)}
+        self._active_roots = list(states)
+        self._members_by_root = {state: [state] for state in states}
+
+    def find(self, state: Context) -> Context:
+        return self.union_find.find(state)
+
+    def roots(self) -> tuple[Context, ...]:
+        return tuple(self._active_roots)
+
+    def members(self, root: Context) -> list[Context]:
+        return self._members_by_root[self.find(root)]
+
+    def union(self, left: Context, right: Context) -> Context:
+        left_root = self.union_find.find(left)
+        right_root = self.union_find.find(right)
+        if left_root == right_root:
+            return left_root
+
+        root = self.union_find.union(left_root, right_root)
+        removed_root = right_root if root == left_root else left_root
+        self._members_by_root[root] = self._merge_members(
+            self._members_by_root[root],
+            self._members_by_root.pop(removed_root),
+        )
+        self._active_roots.remove(removed_root)
+        return root
+
+    def _merge_members(self, left: list[Context], right: list[Context]) -> list[Context]:
+        merged: list[Context] = []
+        left_index = 0
+        right_index = 0
+        while left_index < len(left) and right_index < len(right):
+            if self._state_index[left[left_index]] <= self._state_index[right[right_index]]:
+                merged.append(left[left_index])
+                left_index += 1
+            else:
+                merged.append(right[right_index])
+                right_index += 1
+        merged.extend(left[left_index:])
+        merged.extend(right[right_index:])
+        return merged
 
 
 def _context_sort_key(context: Context) -> tuple[int, str]:

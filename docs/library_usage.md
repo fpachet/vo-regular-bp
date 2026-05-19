@@ -254,9 +254,12 @@ successor matching.
 
 Within one `alergia_merge(...)` call, projected continuation counts, dominant
 projected successor labels, and recursive pair-compatibility decisions are
-cached. This is most useful when a projection makes many source states look
-compatible enough to require recursive checks. It preserves the same merge
-criterion and metadata as the uncached implementation.
+cached. Active merge classes and their members are tracked incrementally instead
+of being reconstructed by scanning all source states during every candidate
+comparison. This is most useful when ALERGIA considers many candidate classes,
+whether because a projection makes states compatible enough to require
+recursive checks or because many pairs are rejected cheaply. It preserves the
+same merge criterion and metadata as the uncached implementation.
 
 For quick compression diagnostics, use:
 
