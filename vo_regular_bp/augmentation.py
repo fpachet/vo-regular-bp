@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
+import time
 
 from .context import Context, Symbol, _as_context
 from .order_stack_bp import FixedOrderContextGraph, OrderStackModel
@@ -121,6 +122,28 @@ class VirtualAugmentedOrderStackModel:
         init=False,
         repr=False,
     )
+    _apply_symbol_cache: dict[tuple[int, Symbol], Symbol] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _inverse_symbol_cache: dict[tuple[int, Symbol], Symbol] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _inverse_context_cache: dict[tuple[int, Context], Context] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _context_materialization_seconds: float = field(default=0.0, init=False, repr=False)
+    _context_materialization_calls: int = field(default=0, init=False, repr=False)
+    _context_materialization_cache_hits: int = field(default=0, init=False, repr=False)
+    _context_materialization_cache_misses: int = field(default=0, init=False, repr=False)
+    _augmented_count_calls: int = field(default=0, init=False, repr=False)
+    _augmented_count_cache_hits: int = field(default=0, init=False, repr=False)
+    _augmented_count_cache_misses: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.transforms:
@@ -129,13 +152,13 @@ class VirtualAugmentedOrderStackModel:
             raise ValueError("transform weights must be positive")
         self.max_order = self.base_model.max_order
         self.forbidden_symbols = frozenset(
-            transform.apply_symbol(symbol)
-            for transform in self.transforms
+            self._apply_symbol(transform_index, symbol)
+            for transform_index, _transform in enumerate(self.transforms)
             for symbol in self.base_model.forbidden_symbols
         )
         self.alphabet = frozenset(
-            transform.apply_symbol(symbol)
-            for transform in self.transforms
+            self._apply_symbol(transform_index, symbol)
+            for transform_index, _transform in enumerate(self.transforms)
             for symbol in self.base_model.alphabet
         )
 
@@ -171,35 +194,93 @@ class VirtualAugmentedOrderStackModel:
         return sum(1 for _context in self.iter_contexts(order))
 
     def iter_contexts(self, order: int) -> Iterable[Context]:
+        self._context_materialization_calls += 1
         cached = self._contexts_cache.get(order)
         if cached is not None:
+            self._context_materialization_cache_hits += 1
             return cached
+        self._context_materialization_cache_misses += 1
+        started = time.perf_counter()
         contexts: set[Context] = set()
         for context in self.base_model.counts:
             if len(context) > order:
                 continue
-            for transform in self.transforms:
-                contexts.add(transform.apply_context(context))
+            for transform_index, _transform in enumerate(self.transforms):
+                contexts.add(
+                    tuple(
+                        self._apply_symbol(transform_index, symbol)
+                        for symbol in context
+                    )
+                )
         result = tuple(contexts)
         self._contexts_cache[order] = result
+        self._context_materialization_seconds += time.perf_counter() - started
         return result
 
     def augmented_counts(self, context: Iterable[Symbol] | Context) -> Counter[Symbol]:
+        self._augmented_count_calls += 1
         state = _as_context(context)
         cached = self._counts_cache.get(state)
         if cached is not None:
+            self._augmented_count_cache_hits += 1
             return cached
 
+        self._augmented_count_cache_misses += 1
         counts: Counter[Symbol] = Counter()
-        for transform in self.transforms:
-            inverse_context = transform.inverse_context(state)
+        for transform_index, _transform in enumerate(self.transforms):
+            inverse_context = self._inverse_context(transform_index, state)
             base_counts = self.base_model.counts.get(inverse_context)
             if not base_counts:
                 continue
             for base_symbol, count in base_counts.items():
-                counts[transform.apply_symbol(base_symbol)] += count * transform.weight
+                counts[self._apply_symbol(transform_index, base_symbol)] += (
+                    count * self.transforms[transform_index].weight
+                )
         self._counts_cache[state] = counts
         return counts
+
+    def virtual_diagnostics(self) -> dict[str, int | float]:
+        return {
+            "virtual_context_materialization_seconds": self._context_materialization_seconds,
+            "virtual_context_materialization_calls": self._context_materialization_calls,
+            "virtual_context_materialization_cache_hits": (
+                self._context_materialization_cache_hits
+            ),
+            "virtual_context_materialization_cache_misses": (
+                self._context_materialization_cache_misses
+            ),
+            "augmented_count_calls": self._augmented_count_calls,
+            "augmented_count_cache_hits": self._augmented_count_cache_hits,
+            "augmented_count_cache_misses": self._augmented_count_cache_misses,
+        }
+
+    def _apply_symbol(self, transform_index: int, symbol: Symbol) -> Symbol:
+        key = (transform_index, symbol)
+        cached = self._apply_symbol_cache.get(key)
+        if cached is not None:
+            return cached
+        transformed = self.transforms[transform_index].apply_symbol(symbol)
+        self._apply_symbol_cache[key] = transformed
+        return transformed
+
+    def _inverse_symbol(self, transform_index: int, symbol: Symbol) -> Symbol:
+        key = (transform_index, symbol)
+        cached = self._inverse_symbol_cache.get(key)
+        if cached is not None:
+            return cached
+        transformed = self.transforms[transform_index].inverse_symbol(symbol)
+        self._inverse_symbol_cache[key] = transformed
+        return transformed
+
+    def _inverse_context(self, transform_index: int, context: Sequence[Symbol]) -> Context:
+        state = _as_context(context)
+        key = (transform_index, state)
+        cached = self._inverse_context_cache.get(key)
+        if cached is not None:
+            return cached
+        transformed = tuple(self._inverse_symbol(transform_index, symbol) for symbol in state)
+        self._inverse_context_cache[key] = transformed
+        return transformed
 
     def longest_available_suffix(
         self,
@@ -292,7 +373,6 @@ class VirtualAugmentedOrderStackModel:
             order: LazyVirtualFixedOrderContextGraph(
                 self,
                 order=order,
-                allowed_contexts=self.iter_contexts(order),
             )
             for order in range(1, self.max_order + 1)
         }
@@ -321,17 +401,28 @@ class LazyVirtualFixedOrderContextGraph:
         model: VirtualAugmentedOrderStackModel,
         *,
         order: int,
-        allowed_contexts: Iterable[Context],
+        allowed_contexts: Iterable[Context] | None = None,
     ) -> None:
         if order < 1 or order > model.max_order:
             raise ValueError(f"order must be between 1 and {model.max_order}")
         self.model = model
         self.order = int(order)
-        self.allowed_contexts = {self.truncate_context(context) for context in allowed_contexts}
+        self._allowed_contexts_source = (
+            None if allowed_contexts is None else tuple(allowed_contexts)
+        )
+        self._allowed_contexts: set[Context] | None = None
         self.contexts: list[Context] = []
         self.context_to_id: dict[Context, int] = {}
         self._outgoing_cache: dict[int, list[StackEdge]] = {}
         self.outgoing = _LazyOutgoing(self)
+        self.outgoing_row_calls = 0
+        self.outgoing_row_cache_hits = 0
+        self.outgoing_row_cache_misses = 0
+        self.outgoing_row_materialization_seconds = 0.0
+
+    @property
+    def allowed_contexts(self) -> set[Context]:
+        return self._ensure_allowed_contexts()
 
     def truncate_context(self, context: Iterable[Symbol] | Context) -> Context:
         state = _as_context(context)
@@ -344,7 +435,7 @@ class LazyVirtualFixedOrderContextGraph:
 
     def state_id(self, context: Iterable[Symbol] | Context) -> int | None:
         state = self.truncate_context(context)
-        if state not in self.allowed_contexts:
+        if state not in self._ensure_allowed_contexts():
             return None
         return self._add_context(state)
 
@@ -353,18 +444,29 @@ class LazyVirtualFixedOrderContextGraph:
         return sum(len(edges) for edges in self.outgoing)
 
     def outgoing_for_state(self, state: int) -> list[StackEdge]:
+        self.outgoing_row_calls += 1
         cached = self._outgoing_cache.get(state)
         if cached is not None:
+            self.outgoing_row_cache_hits += 1
             return cached
+        self.outgoing_row_cache_misses += 1
+        started = time.perf_counter()
         context = self.contexts[state]
         distribution, effective_order = self.model.continuation_distribution_with_order(
             context,
             max_order=self.order,
         )
         edges: list[StackEdge] = []
+        order = self.order
+        allowed_contexts = self._ensure_allowed_contexts()
         for symbol, probability in distribution:
-            dst_context = self.next_context(context, symbol)
-            if dst_context not in self.allowed_contexts:
+            candidate_context = context + (symbol,)
+            dst_context = (
+                candidate_context
+                if len(candidate_context) <= order
+                else candidate_context[-order:]
+            )
+            if dst_context not in allowed_contexts:
                 continue
             dst = self._add_context(dst_context)
             edges.append(
@@ -377,7 +479,21 @@ class LazyVirtualFixedOrderContextGraph:
                 )
             )
         self._outgoing_cache[state] = edges
+        self.outgoing_row_materialization_seconds += time.perf_counter() - started
         return edges
+
+    def _ensure_allowed_contexts(self) -> set[Context]:
+        allowed_contexts = self._allowed_contexts
+        if allowed_contexts is not None:
+            return allowed_contexts
+        source = (
+            self.model.iter_contexts(self.order)
+            if self._allowed_contexts_source is None
+            else self._allowed_contexts_source
+        )
+        allowed_contexts = {self.truncate_context(context) for context in source}
+        self._allowed_contexts = allowed_contexts
+        return allowed_contexts
 
     def _add_context(self, context: Context) -> int:
         found = self.context_to_id.get(context)

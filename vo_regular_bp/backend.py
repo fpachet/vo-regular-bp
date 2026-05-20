@@ -52,6 +52,25 @@ class BackendDiagnostics:
     regular_product_states: int | None = None
     regular_product_states_time_indexed: int | None = None
     regular_product_edges: int | None = None
+    regular_transition_rows: int | None = None
+    regular_transition_row_cache_hits: int | None = None
+    regular_transition_row_cache_misses: int | None = None
+    regular_accepted_transitions: int | None = None
+    regular_beta_state_expansions: int | None = None
+    regular_beta_cache_hits: int | None = None
+    regular_beta_cache_misses: int | None = None
+    regular_acceptor_symbol_transition_cache_hits: int | None = None
+    regular_acceptor_symbol_transition_cache_misses: int | None = None
+    virtual_context_materialization_seconds: float | None = None
+    virtual_context_materialization_calls: int | None = None
+    virtual_context_materialization_cache_hits: int | None = None
+    virtual_context_materialization_cache_misses: int | None = None
+    augmented_count_calls: int | None = None
+    augmented_count_cache_hits: int | None = None
+    augmented_count_cache_misses: int | None = None
+    virtual_outgoing_row_calls: int | None = None
+    virtual_outgoing_row_cache_hits: int | None = None
+    virtual_outgoing_row_cache_misses: int | None = None
     success_mass: float | None = None
     start_order_masses: tuple[tuple[int, float], ...] = ()
 
@@ -65,6 +84,35 @@ class BackendDiagnostics:
             "regular_product_states": self.regular_product_states,
             "regular_product_states_time_indexed": self.regular_product_states_time_indexed,
             "regular_product_edges": self.regular_product_edges,
+            "regular_transition_rows": self.regular_transition_rows,
+            "regular_transition_row_cache_hits": self.regular_transition_row_cache_hits,
+            "regular_transition_row_cache_misses": self.regular_transition_row_cache_misses,
+            "regular_accepted_transitions": self.regular_accepted_transitions,
+            "regular_beta_state_expansions": self.regular_beta_state_expansions,
+            "regular_beta_cache_hits": self.regular_beta_cache_hits,
+            "regular_beta_cache_misses": self.regular_beta_cache_misses,
+            "regular_acceptor_symbol_transition_cache_hits": (
+                self.regular_acceptor_symbol_transition_cache_hits
+            ),
+            "regular_acceptor_symbol_transition_cache_misses": (
+                self.regular_acceptor_symbol_transition_cache_misses
+            ),
+            "virtual_context_materialization_seconds": (
+                self.virtual_context_materialization_seconds
+            ),
+            "virtual_context_materialization_calls": self.virtual_context_materialization_calls,
+            "virtual_context_materialization_cache_hits": (
+                self.virtual_context_materialization_cache_hits
+            ),
+            "virtual_context_materialization_cache_misses": (
+                self.virtual_context_materialization_cache_misses
+            ),
+            "augmented_count_calls": self.augmented_count_calls,
+            "augmented_count_cache_hits": self.augmented_count_cache_hits,
+            "augmented_count_cache_misses": self.augmented_count_cache_misses,
+            "virtual_outgoing_row_calls": self.virtual_outgoing_row_calls,
+            "virtual_outgoing_row_cache_hits": self.virtual_outgoing_row_cache_hits,
+            "virtual_outgoing_row_cache_misses": self.virtual_outgoing_row_cache_misses,
             "success_mass": self.success_mass,
             "start_order_masses": self.start_order_masses,
         }
@@ -110,6 +158,32 @@ class UntilOrderStackDiagnostics:
         }
 
 
+def _virtual_model_diagnostics(model: object) -> dict[str, object]:
+    diagnostics = getattr(model, "virtual_diagnostics", None)
+    if callable(diagnostics):
+        return dict(diagnostics())
+    return {}
+
+
+def _virtual_graph_outgoing_diagnostics(
+    graphs: object,
+) -> dict[str, int]:
+    values = tuple(graphs.values()) if isinstance(graphs, dict) else ()
+    return {
+        "virtual_outgoing_row_calls": sum(
+            int(getattr(graph, "outgoing_row_calls", 0)) for graph in values
+        ),
+        "virtual_outgoing_row_cache_hits": sum(
+            int(getattr(graph, "outgoing_row_cache_hits", 0))
+            for graph in values
+        ),
+        "virtual_outgoing_row_cache_misses": sum(
+            int(getattr(graph, "outgoing_row_cache_misses", 0))
+            for graph in values
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class ConstrainedOrderStackBackend:
     """Prepared reusable constrained order-stack sampler.
@@ -124,6 +198,10 @@ class ConstrainedOrderStackBackend:
     @property
     def diagnostics(self) -> BackendDiagnostics:
         is_regular = isinstance(self.result, RegularOrderStackBPResult)
+        virtual_diagnostics = _virtual_model_diagnostics(self.result.model)
+        virtual_outgoing_diagnostics = _virtual_graph_outgoing_diagnostics(
+            self.result.graphs,
+        )
         return BackendDiagnostics(
             backend="order_stack_regular" if is_regular else "order_stack_positional",
             length=self.result.length,
@@ -135,6 +213,63 @@ class ConstrainedOrderStackBackend:
                 self.result.time_indexed_product_state_count if is_regular else None
             ),
             regular_product_edges=self.result.product_edge_count if is_regular else None,
+            regular_transition_rows=(
+                self.result.regular_transition_row_count if is_regular else None
+            ),
+            regular_transition_row_cache_hits=(
+                self.result.regular_transition_row_cache_hits if is_regular else None
+            ),
+            regular_transition_row_cache_misses=(
+                self.result.regular_transition_row_cache_misses if is_regular else None
+            ),
+            regular_accepted_transitions=(
+                self.result.regular_accepted_transition_count if is_regular else None
+            ),
+            regular_beta_state_expansions=(
+                self.result.regular_beta_state_expansions if is_regular else None
+            ),
+            regular_beta_cache_hits=(
+                self.result.regular_beta_cache_hits if is_regular else None
+            ),
+            regular_beta_cache_misses=(
+                self.result.regular_beta_cache_misses if is_regular else None
+            ),
+            regular_acceptor_symbol_transition_cache_hits=(
+                self.result.regular_acceptor_symbol_transition_cache_hits
+                if is_regular
+                else None
+            ),
+            regular_acceptor_symbol_transition_cache_misses=(
+                self.result.regular_acceptor_symbol_transition_cache_misses
+                if is_regular
+                else None
+            ),
+            virtual_context_materialization_seconds=virtual_diagnostics.get(
+                "virtual_context_materialization_seconds",
+            ),
+            virtual_context_materialization_calls=virtual_diagnostics.get(
+                "virtual_context_materialization_calls",
+            ),
+            virtual_context_materialization_cache_hits=virtual_diagnostics.get(
+                "virtual_context_materialization_cache_hits",
+            ),
+            virtual_context_materialization_cache_misses=virtual_diagnostics.get(
+                "virtual_context_materialization_cache_misses",
+            ),
+            augmented_count_calls=virtual_diagnostics.get("augmented_count_calls"),
+            augmented_count_cache_hits=virtual_diagnostics.get("augmented_count_cache_hits"),
+            augmented_count_cache_misses=virtual_diagnostics.get(
+                "augmented_count_cache_misses",
+            ),
+            virtual_outgoing_row_calls=virtual_outgoing_diagnostics[
+                "virtual_outgoing_row_calls"
+            ],
+            virtual_outgoing_row_cache_hits=virtual_outgoing_diagnostics[
+                "virtual_outgoing_row_cache_hits"
+            ],
+            virtual_outgoing_row_cache_misses=virtual_outgoing_diagnostics[
+                "virtual_outgoing_row_cache_misses"
+            ],
             success_mass=self.result.success_mass,
             start_order_masses=self.result.start_order_masses(),
         )

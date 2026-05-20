@@ -13,8 +13,9 @@ import bisect
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+import math
 import random
-from typing import Hashable, Protocol
+from typing import Hashable, Protocol, TypeAlias
 
 from .acceptors import (
     DFA,
@@ -40,11 +41,11 @@ class StackEdge:
     order: int
 
 
-@dataclass(frozen=True)
-class _RegularTransition:
-    edge: StackEdge
-    next_acceptor_state: Hashable
-    transition_weight: float = 1.0
+_RegularTransition: TypeAlias = tuple[StackEdge, Hashable, float]
+
+
+_TRANSITION_CACHE_MISSING = object()
+_TRANSITION_REJECTED = object()
 
 
 @dataclass(frozen=True)
@@ -828,9 +829,17 @@ class _RegularBackwardCache:
     allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]] = field(default_factory=dict)
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
     transition_rows: dict[tuple[int, Hashable], tuple[_RegularTransition, ...]] = field(default_factory=dict)
+    acceptor_symbol_transitions: dict[
+        Hashable,
+        dict[Symbol, tuple[Hashable, float] | object],
+    ] = field(default_factory=dict)
     expanded_edge_total: int = 0
+    beta_cache_hits: int = 0
+    beta_cache_misses: int = 0
     transition_row_cache_hits: int = 0
     transition_row_cache_misses: int = 0
+    acceptor_symbol_transition_cache_hits: int = 0
+    acceptor_symbol_transition_cache_misses: int = 0
     accepted_transition_total: int = 0
     dense_transition_by_symbol: Mapping[Symbol, tuple[int, ...]] | None = field(default=None, init=False)
     weighted_transitions: bool = field(default=False, init=False)
@@ -845,8 +854,10 @@ class _RegularBackwardCache:
         key = (time, state, acceptor_state)
         cached = self.memo.get(key)
         if cached is not None:
+            self.beta_cache_hits += 1
             return cached
 
+        self.beta_cache_misses += 1
         if time == self.length:
             value = 1.0 if self.acceptor.is_accepting(acceptor_state) else 0.0
             self.memo[key] = value
@@ -857,55 +868,62 @@ class _RegularBackwardCache:
         constraint = self.constraints.get(time)
         allowed_forbidden = self.allowed_forbidden_symbols.get(time, frozenset())
         row = self.accepted_transitions(state, acceptor_state)
+        next_time = time + 1
+        memo = self.memo
+        memo_get = memo.get
+        beta = self.beta
+        beta_cache_hits = 0
+        forbidden_symbols = self.forbidden_symbols
         if constraint is None:
-            for transition in row:
-                edge = transition.edge
-                if _is_forbidden(edge.symbol, self.forbidden_symbols, allowed_forbidden):
+            for edge, next_acceptor_state, transition_weight in row:
+                if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
                     continue
                 edge_count += 1
+                next_beta = memo_get((next_time, edge.dst, next_acceptor_state))
+                if next_beta is None:
+                    next_beta = beta(next_time, edge.dst, next_acceptor_state)
+                else:
+                    beta_cache_hits += 1
                 total += (
                     edge.probability
-                    * transition.transition_weight
-                    * self.beta(
-                        time + 1,
-                        edge.dst,
-                        transition.next_acceptor_state,
-                    )
+                    * transition_weight
+                    * next_beta
                 )
         elif callable(constraint):
-            for transition in row:
-                edge = transition.edge
-                if _is_forbidden(edge.symbol, self.forbidden_symbols, allowed_forbidden):
+            for edge, next_acceptor_state, transition_weight in row:
+                if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
                     continue
                 if not constraint(edge.symbol):
                     continue
                 edge_count += 1
+                next_beta = memo_get((next_time, edge.dst, next_acceptor_state))
+                if next_beta is None:
+                    next_beta = beta(next_time, edge.dst, next_acceptor_state)
+                else:
+                    beta_cache_hits += 1
                 total += (
                     edge.probability
-                    * transition.transition_weight
-                    * self.beta(
-                        time + 1,
-                        edge.dst,
-                        transition.next_acceptor_state,
-                    )
+                    * transition_weight
+                    * next_beta
                 )
         else:
-            for transition in row:
-                edge = transition.edge
-                if _is_forbidden(edge.symbol, self.forbidden_symbols, allowed_forbidden):
+            for edge, next_acceptor_state, transition_weight in row:
+                if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
                     continue
                 if edge.symbol not in constraint:
                     continue
                 edge_count += 1
+                next_beta = memo_get((next_time, edge.dst, next_acceptor_state))
+                if next_beta is None:
+                    next_beta = beta(next_time, edge.dst, next_acceptor_state)
+                else:
+                    beta_cache_hits += 1
                 total += (
                     edge.probability
-                    * transition.transition_weight
-                    * self.beta(
-                        time + 1,
-                        edge.dst,
-                        transition.next_acceptor_state,
-                    )
+                    * transition_weight
+                    * next_beta
                 )
+        self.beta_cache_hits += beta_cache_hits
         self.expanded_edge_total += edge_count
         self.memo[key] = total
         return total
@@ -941,22 +959,82 @@ class _RegularBackwardCache:
                     )
                     if dfa_weight <= 0.0:
                         continue
-                row.append(_RegularTransition(edge, next_state, dfa_weight))
+                row.append((edge, next_state, dfa_weight))
         else:
+            symbol_transitions = self.acceptor_symbol_transitions.get(acceptor_state)
+            if symbol_transitions is None:
+                symbol_transitions = {}
+                self.acceptor_symbol_transitions[acceptor_state] = symbol_transitions
+            symbol_get = symbol_transitions.get
+            missing = _TRANSITION_CACHE_MISSING
+            rejected = _TRANSITION_REJECTED
+            transition_func = getattr(self.acceptor, "_transition_func", None)
+            acceptor_next_state = self.acceptor.next_state
+            if (
+                transition_func is not None
+                and getattr(type(self.acceptor), "next_state", None) is DFA.next_state
+            ):
+                acceptor_next_state = transition_func
+            weighted_transitions = self.weighted_transitions
+            transition_weight_func = getattr(self.acceptor, "_transition_weight_func", None)
+            transition_weight_map = getattr(self.acceptor, "_transition_weights", None)
+            can_use_direct_weight = (
+                getattr(type(self.acceptor), "transition_weight", None)
+                is DFA.transition_weight
+            )
+            row_append = row.append
+            symbol_hits = 0
+            symbol_misses = 0
             for edge in self.graph.outgoing[state]:
-                next_acceptor_state = self.acceptor.next_state(acceptor_state, edge.symbol)
-                if next_acceptor_state is None:
-                    continue
-                dfa_weight = 1.0
-                if self.weighted_transitions:
-                    dfa_weight = regular_transition_weight(
-                        self.acceptor,
-                        acceptor_state,
-                        edge.symbol,
-                    )
-                    if dfa_weight <= 0.0:
+                symbol = edge.symbol
+                cached_symbol_transition = symbol_get(symbol, missing)
+                if cached_symbol_transition is missing:
+                    symbol_misses += 1
+                    next_acceptor_state = acceptor_next_state(acceptor_state, symbol)
+                    if next_acceptor_state is None:
+                        symbol_transitions[symbol] = rejected
                         continue
-                row.append(_RegularTransition(edge, next_acceptor_state, dfa_weight))
+                    dfa_weight = 1.0
+                    if weighted_transitions:
+                        if can_use_direct_weight and transition_weight_func is not None:
+                            dfa_weight = float(transition_weight_func(acceptor_state, symbol))
+                            if not math.isfinite(dfa_weight) or dfa_weight < 0.0:
+                                raise ValueError(
+                                    f"transition weight for state {acceptor_state!r} "
+                                    f"and symbol {symbol!r} must be a finite "
+                                    f"nonnegative number, got {dfa_weight!r}"
+                                )
+                        elif can_use_direct_weight and transition_weight_map:
+                            dfa_weight = float(
+                                transition_weight_map.get(acceptor_state, {}).get(
+                                    symbol,
+                                    1.0,
+                                )
+                            )
+                            if not math.isfinite(dfa_weight) or dfa_weight < 0.0:
+                                raise ValueError(
+                                    f"transition weight for state {acceptor_state!r} "
+                                    f"and symbol {symbol!r} must be a finite "
+                                    f"nonnegative number, got {dfa_weight!r}"
+                                )
+                        else:
+                            dfa_weight = regular_transition_weight(
+                                self.acceptor,
+                                acceptor_state,
+                                symbol,
+                            )
+                        if dfa_weight <= 0.0:
+                            symbol_transitions[symbol] = rejected
+                            continue
+                    symbol_transitions[symbol] = (next_acceptor_state, dfa_weight)
+                else:
+                    symbol_hits += 1
+                    if cached_symbol_transition is rejected:
+                        continue
+                    next_acceptor_state, dfa_weight = cached_symbol_transition  # type: ignore[misc]
+                row_append((edge, next_acceptor_state, dfa_weight))
+            self.acceptor_symbol_transition_cache_hits += symbol_hits
+            self.acceptor_symbol_transition_cache_misses += symbol_misses
 
         result = tuple(row)
         self.accepted_transition_total += len(result)
@@ -990,6 +1068,10 @@ class _RegularBackwardCache:
     @property
     def transition_row_count(self) -> int:
         return len(self.transition_rows)
+
+    @property
+    def beta_state_expansions(self) -> int:
+        return self.beta_cache_misses
 
 
 @dataclass
@@ -1053,6 +1135,32 @@ class RegularOrderStackBPResult:
     @property
     def regular_accepted_transition_count(self) -> int:
         return sum(cache.accepted_transition_total for cache in self.backwards.values())
+
+    @property
+    def regular_beta_cache_hits(self) -> int:
+        return sum(cache.beta_cache_hits for cache in self.backwards.values())
+
+    @property
+    def regular_beta_cache_misses(self) -> int:
+        return sum(cache.beta_cache_misses for cache in self.backwards.values())
+
+    @property
+    def regular_beta_state_expansions(self) -> int:
+        return sum(cache.beta_state_expansions for cache in self.backwards.values())
+
+    @property
+    def regular_acceptor_symbol_transition_cache_hits(self) -> int:
+        return sum(
+            cache.acceptor_symbol_transition_cache_hits
+            for cache in self.backwards.values()
+        )
+
+    @property
+    def regular_acceptor_symbol_transition_cache_misses(self) -> int:
+        return sum(
+            cache.acceptor_symbol_transition_cache_misses
+            for cache in self.backwards.values()
+        )
 
     @property
     def success_mass(self) -> float:
@@ -1172,17 +1280,16 @@ class RegularOrderStackBPResult:
             cache = self.backwards[order]
             row = cache.accepted_transitions(state, acceptor_state)
             if constraint is None:
-                for transition in row:
-                    edge = transition.edge
+                for edge, next_acceptor_state, transition_weight in row:
                     if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     weight = (
                         edge.probability
-                        * transition.transition_weight
+                        * transition_weight
                         * cache.beta(
                             position + 1,
                             edge.dst,
-                            transition.next_acceptor_state,
+                            next_acceptor_state,
                         )
                     )
                     if weight <= 0.0:
@@ -1190,19 +1297,18 @@ class RegularOrderStackBPResult:
                     candidates.append(edge)
                     weights.append(weight)
             elif callable(constraint):
-                for transition in row:
-                    edge = transition.edge
+                for edge, next_acceptor_state, transition_weight in row:
                     if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     if not constraint(edge.symbol):
                         continue
                     weight = (
                         edge.probability
-                        * transition.transition_weight
+                        * transition_weight
                         * cache.beta(
                             position + 1,
                             edge.dst,
-                            transition.next_acceptor_state,
+                            next_acceptor_state,
                         )
                     )
                     if weight <= 0.0:
@@ -1210,19 +1316,18 @@ class RegularOrderStackBPResult:
                     candidates.append(edge)
                     weights.append(weight)
             else:
-                for transition in row:
-                    edge = transition.edge
+                for edge, next_acceptor_state, transition_weight in row:
                     if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
                         continue
                     if edge.symbol not in constraint:
                         continue
                     weight = (
                         edge.probability
-                        * transition.transition_weight
+                        * transition_weight
                         * cache.beta(
                             position + 1,
                             edge.dst,
-                            transition.next_acceptor_state,
+                            next_acceptor_state,
                         )
                     )
                     if weight <= 0.0:

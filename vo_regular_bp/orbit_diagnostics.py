@@ -296,11 +296,12 @@ def regular_product_orbit_stats(
             reference = None
             if include_transition_row_shapes:
                 reference = _first_shiftable_symbol((context, acceptor_payload), fixed)
-            for transition in cache.accepted_transitions(graph_state, acceptor_state):
-                edge = transition.edge
+            for edge, next_acceptor_state, _transition_weight in cache.accepted_transitions(
+                graph_state,
+                acceptor_state,
+            ):
                 if not _constraint_allows(result.constraints.get(time), edge.symbol):
                     continue
-                next_acceptor_state = transition.next_acceptor_state
                 edge_cache_key = (
                     order,
                     graph_state,
@@ -506,11 +507,12 @@ def _regular_row_signature(
 
     transition_keys: list[Hashable] = []
     edge_count = 0
-    for transition in cache.accepted_transitions(graph_state, acceptor_state):
-        edge = transition.edge
+    for edge, next_acceptor_state, _transition_weight in cache.accepted_transitions(
+        graph_state,
+        acceptor_state,
+    ):
         if not _constraint_allows(constraint, edge.symbol):
             continue
-        next_acceptor_state = transition.next_acceptor_state
         next_payload = acceptor_payload_cache.get(next_acceptor_state)
         if next_payload is None:
             next_payload = _acceptor_state_payload(result.acceptor, next_acceptor_state)
