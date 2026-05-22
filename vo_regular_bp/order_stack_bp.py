@@ -49,6 +49,48 @@ _TRANSITION_REJECTED = object()
 
 
 @dataclass(frozen=True)
+class _PaddedMelodyConstraintSpec:
+    component_acceptors: tuple[DFA, ...]
+    duration_index: int
+    final_note_index: int | None
+    min_note_index: int | None
+    target: int
+    min_notes: int
+    pad_symbol: Symbol
+    symbol_costs: Mapping[Symbol, int]
+    symbol_is_note: Mapping[Symbol, bool]
+    additive_duration: bool
+    cost_note_options: tuple[tuple[int, bool], ...]
+
+    @property
+    def requires_final_note(self) -> bool:
+        return self.final_note_index is not None
+
+    def parts(self, acceptor_state: Hashable) -> tuple[Hashable, ...] | None:
+        if len(self.component_acceptors) == 1:
+            return (acceptor_state,)
+        if not isinstance(acceptor_state, tuple):
+            return None
+        if len(acceptor_state) != len(self.component_acceptors):
+            return None
+        return acceptor_state
+
+    def compose(self, parts: Sequence[Hashable]) -> Hashable:
+        if len(self.component_acceptors) == 1:
+            return parts[0]
+        return tuple(parts)
+
+
+@dataclass(frozen=True)
+class _PaddedMelodyState:
+    parts: tuple[Hashable, ...]
+    total: int
+    ended: bool
+    final_note: bool
+    note_count: int
+
+
+@dataclass(frozen=True)
 class OrderCandidateSet:
     order: int
     graph: "FixedOrderContextGraph"
@@ -827,12 +869,19 @@ class _RegularBackwardCache:
     constraints: PositionConstraints = field(default_factory=dict)
     forbidden_symbols: frozenset[Symbol] = field(default_factory=frozenset)
     allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]] = field(default_factory=dict)
+    padded_melody_spec: _PaddedMelodyConstraintSpec | None = None
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
     transition_rows: dict[tuple[int, Hashable], tuple[_RegularTransition, ...]] = field(default_factory=dict)
     acceptor_symbol_transitions: dict[
         Hashable,
         dict[Symbol, tuple[Hashable, float] | object],
     ] = field(default_factory=dict)
+    padded_state_parse_cache: dict[Hashable, _PaddedMelodyState | None] = field(default_factory=dict)
+    padded_feasibility_memo: dict[tuple[int, int, bool, bool, int], bool] = field(default_factory=dict)
+    padded_options_by_total: dict[int, tuple[tuple[int, bool], ...]] = field(default_factory=dict)
+    padded_additive_suffix_tables: tuple[dict[int, tuple[int, int]], ...] | None = None
+    padded_edges_by_category: dict[int, dict[tuple[int, bool], tuple[StackEdge, ...]]] = field(default_factory=dict)
+    padded_allowed_categories_cache: dict[tuple[int, int, int], tuple[tuple[int, bool], ...]] = field(default_factory=dict)
     expanded_edge_total: int = 0
     beta_cache_hits: int = 0
     beta_cache_misses: int = 0
@@ -851,6 +900,9 @@ class _RegularBackwardCache:
         self.weighted_transitions = has_custom_transition_weights(self.acceptor)
 
     def beta(self, time: int, state: int, acceptor_state: Hashable) -> float:
+        if self.padded_melody_spec is not None:
+            return self._padded_melody_beta(time, state, acceptor_state)
+
         key = (time, state, acceptor_state)
         cached = self.memo.get(key)
         if cached is not None:
@@ -933,6 +985,9 @@ class _RegularBackwardCache:
         state: int,
         acceptor_state: Hashable,
     ) -> tuple[_RegularTransition, ...]:
+        if self.padded_melody_spec is not None:
+            return self._padded_melody_accepted_transitions(state, acceptor_state)
+
         key = (state, acceptor_state)
         cached = self.transition_rows.get(key)
         if cached is not None:
@@ -1042,6 +1097,9 @@ class _RegularBackwardCache:
         return result
 
     def next_acceptor_state(self, acceptor_state: Hashable, symbol: Symbol) -> Hashable | None:
+        if self.padded_melody_spec is not None:
+            return self._padded_melody_next_acceptor_state(acceptor_state, symbol)
+
         dense_transition_by_symbol = self.dense_transition_by_symbol
         if dense_transition_by_symbol is not None and isinstance(acceptor_state, int):
             transitions = dense_transition_by_symbol.get(symbol)
@@ -1052,6 +1110,640 @@ class _RegularBackwardCache:
                 return None
             return next_state
         return self.acceptor.next_state(acceptor_state, symbol)
+
+    def _padded_melody_beta(
+        self,
+        time: int,
+        state: int,
+        acceptor_state: Hashable,
+    ) -> float:
+        parsed = self._padded_melody_state(acceptor_state)
+        code = self._padded_melody_state_code(parsed)
+        key = (time, state, code)
+        cached = self.memo.get(key)
+        if cached is not None:
+            self.beta_cache_hits += 1
+            return cached
+
+        self.beta_cache_misses += 1
+        remaining = self.length - time
+        if parsed is None or not self._padded_melody_suffix_feasible_state(remaining, parsed):
+            self.memo[key] = 0.0
+            return 0.0
+
+        if time == self.length:
+            value = 1.0 if self.acceptor.is_accepting(acceptor_state) else 0.0
+            self.memo[key] = value
+            return value
+
+        spec = self.padded_melody_spec
+        if spec is not None and (parsed.ended or parsed.total == spec.target):
+            value = self._padded_melody_forced_pad_suffix(time, state, acceptor_state)
+            self.memo[key] = value
+            return value
+
+        total = 0.0
+        edge_count = 0
+        constraint = self.constraints.get(time)
+        allowed_forbidden = self.allowed_forbidden_symbols.get(time, frozenset())
+        next_time = time + 1
+        next_remaining = self.length - next_time
+        memo = self.memo
+        memo_get = memo.get
+        beta = self.beta
+        beta_cache_hits = 0
+        forbidden_symbols = self.forbidden_symbols
+        if spec is not None and spec.additive_duration:
+            for cost, is_note in self._padded_melody_allowed_next_categories(
+                next_remaining,
+                parsed.total,
+                parsed.note_count,
+            ):
+                next_total = parsed.total + cost
+                next_count = min(spec.min_notes, parsed.note_count + (1 if is_note else 0))
+                next_acceptor_state = self._padded_melody_compose_state(
+                    parsed,
+                    total=next_total,
+                    ended=False,
+                    final_note=is_note,
+                    note_count=next_count,
+                )
+                next_code = self._padded_melody_state_code(
+                    self._padded_melody_state(next_acceptor_state)
+                )
+                for edge in self._padded_melody_edges_by_category(state).get(
+                    (cost, is_note),
+                    (),
+                ):
+                    symbol = edge.symbol
+                    if _is_forbidden(symbol, forbidden_symbols, allowed_forbidden):
+                        continue
+                    if constraint is not None:
+                        if callable(constraint):
+                            if not constraint(symbol):
+                                continue
+                        elif symbol not in constraint:
+                            continue
+                    edge_count += 1
+                    next_beta = memo_get((next_time, edge.dst, next_code))
+                    if next_beta is None:
+                        next_beta = beta(next_time, edge.dst, next_acceptor_state)
+                    else:
+                        beta_cache_hits += 1
+                    total += edge.probability * next_beta
+        else:
+            row = self.accepted_transitions(state, acceptor_state)
+            for edge, next_acceptor_state, transition_weight in row:
+                symbol = edge.symbol
+                if _is_forbidden(symbol, forbidden_symbols, allowed_forbidden):
+                    continue
+                if constraint is not None:
+                    if callable(constraint):
+                        if not constraint(symbol):
+                            continue
+                    elif symbol not in constraint:
+                        continue
+                next_parsed = self._padded_melody_state(next_acceptor_state)
+                if next_parsed is None or not self._padded_melody_suffix_feasible_state(
+                    next_remaining,
+                    next_parsed,
+                ):
+                    continue
+                edge_count += 1
+                next_code = self._padded_melody_state_code(next_parsed)
+                next_beta = memo_get((next_time, edge.dst, next_code))
+                if next_beta is None:
+                    next_beta = beta(next_time, edge.dst, next_acceptor_state)
+                else:
+                    beta_cache_hits += 1
+                total += edge.probability * transition_weight * next_beta
+        self.beta_cache_hits += beta_cache_hits
+        self.expanded_edge_total += edge_count
+        self.memo[key] = total
+        return total
+
+    def _padded_melody_accepted_transitions(
+        self,
+        state: int,
+        acceptor_state: Hashable,
+    ) -> tuple[_RegularTransition, ...]:
+        parsed = self._padded_melody_state(acceptor_state)
+        key = (state, self._padded_melody_state_code(parsed))
+        cached = self.transition_rows.get(key)
+        if cached is not None:
+            self.transition_row_cache_hits += 1
+            return cached
+
+        self.transition_row_cache_misses += 1
+        row: list[_RegularTransition] = []
+        row_append = row.append
+        for edge in self.graph.outgoing[state]:
+            next_acceptor_state = self._padded_melody_next_acceptor_state(
+                acceptor_state,
+                edge.symbol,
+            )
+            if next_acceptor_state is None:
+                continue
+            row_append((edge, next_acceptor_state, 1.0))
+
+        result = tuple(row)
+        self.accepted_transition_total += len(result)
+        self.transition_rows[key] = result
+        return result
+
+    def _padded_melody_state_code(
+        self,
+        state: _PaddedMelodyState | None,
+    ) -> int:
+        if state is None:
+            return -1
+        spec = self.padded_melody_spec
+        min_notes = 0 if spec is None else spec.min_notes
+        note_count = min(min_notes, state.note_count)
+        return (
+            ((((state.total * 2) + int(state.ended)) * 2 + int(state.final_note))
+            * (min_notes + 1))
+            + note_count
+        )
+
+    def _padded_melody_compose_state(
+        self,
+        current: _PaddedMelodyState,
+        *,
+        total: int,
+        ended: bool,
+        final_note: bool,
+        note_count: int,
+    ) -> Hashable:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return current.parts
+        parts = list(current.parts)
+        parts[spec.duration_index] = (total, ended)
+        if spec.final_note_index is not None:
+            parts[spec.final_note_index] = (final_note, ended)
+        if spec.min_note_index is not None:
+            parts[spec.min_note_index] = (min(spec.min_notes, note_count), ended)
+        return spec.compose(parts)
+
+    def _padded_melody_edges_by_category(
+        self,
+        state: int,
+    ) -> dict[tuple[int, bool], tuple[StackEdge, ...]]:
+        cached = self.padded_edges_by_category.get(state)
+        if cached is not None:
+            return cached
+        spec = self.padded_melody_spec
+        grouped: dict[tuple[int, bool], list[StackEdge]] = {}
+        if spec is not None:
+            for edge in self.graph.outgoing[state]:
+                if edge.symbol == spec.pad_symbol:
+                    continue
+                cost = spec.symbol_costs.get(edge.symbol)
+                is_note = spec.symbol_is_note.get(edge.symbol)
+                if cost is None or is_note is None or cost <= 0:
+                    continue
+                grouped.setdefault((cost, bool(is_note)), []).append(edge)
+        result = {category: tuple(edges) for category, edges in grouped.items()}
+        self.padded_edges_by_category[state] = result
+        return result
+
+    def _padded_melody_allowed_next_categories(
+        self,
+        next_remaining: int,
+        total: int,
+        note_count: int,
+    ) -> tuple[tuple[int, bool], ...]:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return ()
+        key = (next_remaining, total, min(spec.min_notes, note_count))
+        cached = self.padded_allowed_categories_cache.get(key)
+        if cached is not None:
+            return cached
+        categories: list[tuple[int, bool]] = []
+        for cost, is_note in spec.cost_note_options:
+            next_total = total + cost
+            if next_total > spec.target:
+                continue
+            next_count = min(spec.min_notes, note_count + (1 if is_note else 0))
+            if self._padded_melody_suffix_feasible(
+                next_remaining,
+                next_total,
+                False,
+                is_note,
+                next_count,
+            ):
+                categories.append((cost, is_note))
+        result = tuple(categories)
+        self.padded_allowed_categories_cache[key] = result
+        return result
+
+    def _padded_melody_next_acceptor_state(
+        self,
+        acceptor_state: Hashable,
+        symbol: Symbol,
+    ) -> Hashable | None:
+        symbol_transitions = self.acceptor_symbol_transitions.get(acceptor_state)
+        if symbol_transitions is None:
+            symbol_transitions = {}
+            self.acceptor_symbol_transitions[acceptor_state] = symbol_transitions
+        cached_symbol_transition = symbol_transitions.get(symbol, _TRANSITION_CACHE_MISSING)
+        if cached_symbol_transition is not _TRANSITION_CACHE_MISSING:
+            self.acceptor_symbol_transition_cache_hits += 1
+            if cached_symbol_transition is _TRANSITION_REJECTED:
+                return None
+            return cached_symbol_transition  # type: ignore[return-value]
+        self.acceptor_symbol_transition_cache_misses += 1
+
+        spec = self.padded_melody_spec
+        if spec is None:
+            symbol_transitions[symbol] = _TRANSITION_REJECTED
+            return None
+        parsed = self._padded_melody_state(acceptor_state)
+        if parsed is None:
+            symbol_transitions[symbol] = _TRANSITION_REJECTED
+            return None
+        if parsed.ended and symbol != spec.pad_symbol:
+            symbol_transitions[symbol] = _TRANSITION_REJECTED
+            return None
+
+        parts = list(parsed.parts)
+        duration_state = parsed.parts[spec.duration_index]
+        duration_acceptor = spec.component_acceptors[spec.duration_index]
+        if symbol == spec.pad_symbol:
+            if parsed.total != spec.target:
+                symbol_transitions[symbol] = _TRANSITION_REJECTED
+                return None
+            duration_next = duration_acceptor.next_state(duration_state, symbol)
+            if duration_next is None:
+                symbol_transitions[symbol] = _TRANSITION_REJECTED
+                return None
+            parts[spec.duration_index] = duration_next
+            if spec.final_note_index is not None:
+                parts[spec.final_note_index] = (parsed.final_note, True)
+            if spec.min_note_index is not None:
+                parts[spec.min_note_index] = (parsed.note_count, True)
+            next_state = spec.compose(parts)
+            symbol_transitions[symbol] = next_state
+            return next_state
+
+        if parsed.total == spec.target:
+            symbol_transitions[symbol] = _TRANSITION_REJECTED
+            return None
+        if symbol not in spec.symbol_costs or symbol not in spec.symbol_is_note:
+            symbol_transitions[symbol] = _TRANSITION_REJECTED
+            return None
+        duration_next = duration_acceptor.next_state(duration_state, symbol)
+        if duration_next is None:
+            symbol_transitions[symbol] = _TRANSITION_REJECTED
+            return None
+        if not (
+            isinstance(duration_next, tuple)
+            and len(duration_next) == 2
+            and isinstance(duration_next[0], int)
+            and isinstance(duration_next[1], bool)
+        ):
+            symbol_transitions[symbol] = _TRANSITION_REJECTED
+            return None
+        parts[spec.duration_index] = duration_next
+
+        is_note = bool(spec.symbol_is_note[symbol])
+        if spec.final_note_index is not None:
+            parts[spec.final_note_index] = (is_note, False)
+        if spec.min_note_index is not None:
+            parts[spec.min_note_index] = (
+                min(spec.min_notes, parsed.note_count + (1 if is_note else 0)),
+                False,
+            )
+        next_state = spec.compose(parts)
+        symbol_transitions[symbol] = next_state
+        return next_state
+
+    def _padded_melody_state(
+        self,
+        acceptor_state: Hashable,
+    ) -> _PaddedMelodyState | None:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return None
+        if acceptor_state in self.padded_state_parse_cache:
+            return self.padded_state_parse_cache[acceptor_state]
+        parts = spec.parts(acceptor_state)
+        if parts is None:
+            self.padded_state_parse_cache[acceptor_state] = None
+            return None
+
+        duration = parts[spec.duration_index]
+        if not (
+            isinstance(duration, tuple)
+            and len(duration) == 2
+            and isinstance(duration[0], int)
+            and isinstance(duration[1], bool)
+        ):
+            self.padded_state_parse_cache[acceptor_state] = None
+            return None
+        total = int(duration[0])
+        ended = bool(duration[1])
+
+        final_note = False
+        if spec.final_note_index is not None:
+            final_state = parts[spec.final_note_index]
+            if not (
+                isinstance(final_state, tuple)
+                and len(final_state) == 2
+                and isinstance(final_state[0], bool)
+                and isinstance(final_state[1], bool)
+            ):
+                self.padded_state_parse_cache[acceptor_state] = None
+                return None
+            final_note = bool(final_state[0])
+            if bool(final_state[1]) != ended:
+                self.padded_state_parse_cache[acceptor_state] = None
+                return None
+
+        note_count = 0
+        if spec.min_note_index is not None:
+            min_state = parts[spec.min_note_index]
+            if not (
+                isinstance(min_state, tuple)
+                and len(min_state) == 2
+                and isinstance(min_state[0], int)
+                and isinstance(min_state[1], bool)
+            ):
+                self.padded_state_parse_cache[acceptor_state] = None
+                return None
+            note_count = int(min_state[0])
+            if bool(min_state[1]) != ended:
+                self.padded_state_parse_cache[acceptor_state] = None
+                return None
+
+        parsed = _PaddedMelodyState(
+            parts=parts,
+            total=total,
+            ended=ended,
+            final_note=final_note,
+            note_count=note_count,
+        )
+        self.padded_state_parse_cache[acceptor_state] = parsed
+        return parsed
+
+    def _padded_melody_suffix_feasible_state(
+        self,
+        remaining: int,
+        state: _PaddedMelodyState,
+    ) -> bool:
+        return self._padded_melody_suffix_feasible(
+            remaining,
+            state.total,
+            state.ended,
+            state.final_note,
+            state.note_count,
+        )
+
+    def _padded_melody_suffix_feasible(
+        self,
+        remaining: int,
+        total: int,
+        ended: bool,
+        final_note: bool,
+        note_count: int,
+    ) -> bool:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return False
+        if total > spec.target or remaining < 0:
+            return False
+        capped_count = min(spec.min_notes, note_count)
+        if spec.additive_duration:
+            return self._padded_melody_additive_suffix_feasible(
+                remaining,
+                total,
+                ended,
+                final_note,
+                capped_count,
+            )
+        key = (remaining, total, ended, final_note, capped_count)
+        cached = self.padded_feasibility_memo.get(key)
+        if cached is not None:
+            return cached
+
+        if remaining == 0:
+            value = self._padded_melody_accepting_values(
+                total,
+                final_note,
+                capped_count,
+            )
+            self.padded_feasibility_memo[key] = value
+            return value
+
+        if ended or total == spec.target:
+            value = self._padded_melody_accepting_values(
+                total,
+                final_note,
+                capped_count,
+            )
+            self.padded_feasibility_memo[key] = value
+            return value
+
+        value = False
+        for next_total, is_note in self._padded_melody_duration_options(total):
+            next_count = min(spec.min_notes, capped_count + (1 if is_note else 0))
+            if self._padded_melody_suffix_feasible(
+                remaining - 1,
+                next_total,
+                False,
+                is_note,
+                next_count,
+            ):
+                value = True
+                break
+        self.padded_feasibility_memo[key] = value
+        return value
+
+    def _padded_melody_additive_suffix_feasible(
+        self,
+        remaining: int,
+        total: int,
+        ended: bool,
+        final_note: bool,
+        note_count: int,
+    ) -> bool:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return False
+        if remaining == 0:
+            return self._padded_melody_accepting_values(total, final_note, note_count)
+        if ended or total == spec.target:
+            return self._padded_melody_accepting_values(total, final_note, note_count)
+        need = spec.target - total
+        if need <= 0:
+            return False
+        tables = self._padded_melody_additive_suffix_tables()
+        if remaining >= len(tables):
+            return False
+        masks = tables[remaining].get(need)
+        if masks is None:
+            return False
+        required_gain = max(0, spec.min_notes - note_count)
+        if required_gain <= 0:
+            usable_mask = masks[1] if spec.requires_final_note else (masks[0] | masks[1])
+            return usable_mask != 0
+        usable_mask = masks[1] if spec.requires_final_note else (masks[0] | masks[1])
+        return bool(usable_mask & ~((1 << required_gain) - 1))
+
+    def _padded_melody_additive_suffix_tables(
+        self,
+    ) -> tuple[dict[int, tuple[int, int]], ...]:
+        cached = self.padded_additive_suffix_tables
+        if cached is not None:
+            return cached
+        spec = self.padded_melody_spec
+        if spec is None:
+            self.padded_additive_suffix_tables = ({},)
+            return self.padded_additive_suffix_tables
+
+        tables: list[dict[int, tuple[int, int]]] = [{} for _ in range(self.length + 1)]
+        exact: set[tuple[int, int, bool]] = {(0, 0, False)}
+        cumulative: dict[int, tuple[int, int]] = {}
+        options = spec.cost_note_options
+        for remaining in range(1, self.length + 1):
+            next_exact: set[tuple[int, int, bool]] = set()
+            for cost_so_far, note_gain, _last_is_note in exact:
+                for cost, is_note in options:
+                    next_cost = cost_so_far + cost
+                    if next_cost > spec.target:
+                        continue
+                    next_gain = min(spec.min_notes, note_gain + (1 if is_note else 0))
+                    next_exact.add((next_cost, next_gain, is_note))
+            for next_cost, next_gain, last_is_note in next_exact:
+                false_mask, true_mask = cumulative.get(next_cost, (0, 0))
+                if last_is_note:
+                    true_mask |= 1 << next_gain
+                else:
+                    false_mask |= 1 << next_gain
+                cumulative[next_cost] = (false_mask, true_mask)
+            tables[remaining] = dict(cumulative)
+            exact = next_exact
+        self.padded_additive_suffix_tables = tuple(tables)
+        return self.padded_additive_suffix_tables
+
+    def _padded_melody_accepting_values(
+        self,
+        total: int,
+        final_note: bool,
+        note_count: int,
+    ) -> bool:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return False
+        if total != spec.target:
+            return False
+        if note_count < spec.min_notes:
+            return False
+        if spec.requires_final_note and not final_note:
+            return False
+        return True
+
+    def _padded_melody_duration_options(
+        self,
+        total: int,
+    ) -> tuple[tuple[int, bool], ...]:
+        cached = self.padded_options_by_total.get(total)
+        if cached is not None:
+            return cached
+        spec = self.padded_melody_spec
+        if spec is None:
+            return ()
+        duration_acceptor = spec.component_acceptors[spec.duration_index]
+        duration_state = (total, False)
+        options: set[tuple[int, bool]] = set()
+        for symbol, _cost in spec.symbol_costs.items():
+            if symbol == spec.pad_symbol:
+                continue
+            is_note = spec.symbol_is_note.get(symbol)
+            if is_note is None:
+                continue
+            next_state = duration_acceptor.next_state(duration_state, symbol)
+            if not (
+                isinstance(next_state, tuple)
+                and len(next_state) == 2
+                and isinstance(next_state[0], int)
+                and isinstance(next_state[1], bool)
+            ):
+                continue
+            next_total = int(next_state[0])
+            if next_total <= total or next_total > spec.target or bool(next_state[1]):
+                continue
+            options.add((next_total, bool(is_note)))
+        result = tuple(sorted(options))
+        self.padded_options_by_total[total] = result
+        return result
+
+    def _padded_melody_forced_pad_suffix(
+        self,
+        time: int,
+        state: int,
+        acceptor_state: Hashable,
+    ) -> float:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return 0.0
+        current_time = time
+        current_state = state
+        current_acceptor_state = acceptor_state
+        mass = 1.0
+        while current_time < self.length:
+            if not self._padded_melody_symbol_allowed(current_time, spec.pad_symbol):
+                return 0.0
+            transition = self._padded_melody_pad_transition(
+                current_state,
+                current_acceptor_state,
+            )
+            if transition is None:
+                return 0.0
+            edge, next_acceptor_state = transition
+            mass *= edge.probability
+            if mass <= 0.0:
+                return 0.0
+            current_state = edge.dst
+            current_acceptor_state = next_acceptor_state
+            current_time += 1
+        return mass if self.acceptor.is_accepting(current_acceptor_state) else 0.0
+
+    def _padded_melody_pad_transition(
+        self,
+        state: int,
+        acceptor_state: Hashable,
+    ) -> tuple[StackEdge, Hashable] | None:
+        spec = self.padded_melody_spec
+        if spec is None:
+            return None
+        for edge in self.graph.outgoing[state]:
+            if edge.symbol != spec.pad_symbol:
+                continue
+            next_acceptor_state = self._padded_melody_next_acceptor_state(
+                acceptor_state,
+                edge.symbol,
+            )
+            if next_acceptor_state is None:
+                return None
+            return edge, next_acceptor_state
+        return None
+
+    def _padded_melody_symbol_allowed(self, time: int, symbol: Symbol) -> bool:
+        if _is_forbidden(
+            symbol,
+            self.forbidden_symbols,
+            self.allowed_forbidden_symbols.get(time, frozenset()),
+        ):
+            return False
+        constraint = self.constraints.get(time)
+        if constraint is None:
+            return True
+        if callable(constraint):
+            return bool(constraint(symbol))
+        return symbol in constraint
 
     @property
     def time_indexed_product_state_count(self) -> int:
@@ -1475,6 +2167,7 @@ def prepare_order_stack_masked_dfa_bp(
         length=length,
         minimize_source_graphs=minimize_source_graphs,
     )
+    padded_melody_spec = _padded_melody_constraint_spec(acceptor, graphs)
     backwards = {
         order: _RegularBackwardCache(
             graph,
@@ -1483,6 +2176,7 @@ def prepare_order_stack_masked_dfa_bp(
             constraints=position_constraints,
             forbidden_symbols=model.forbidden_symbols,
             allowed_forbidden_symbols=allowed_forbidden,
+            padded_melody_spec=padded_melody_spec,
         )
         for order, graph in graphs.items()
     }
@@ -1539,6 +2233,276 @@ def _compile_materialized_source_graphs(
     if minimize_source_graphs:
         graphs = minimize_fixed_order_graphs(graphs)
     return graphs
+
+
+def _padded_melody_constraint_spec(
+    acceptor: DFA,
+    graphs: Mapping[int, FixedOrderContextGraph],
+) -> _PaddedMelodyConstraintSpec | None:
+    components = getattr(acceptor, "component_acceptors", None)
+    if components is None:
+        if getattr(acceptor, "name", None) != "padded_melody_duration_total":
+            return None
+        components = (acceptor,)
+    components = tuple(components)
+    if not components:
+        return None
+    if any(has_custom_transition_weights(component) for component in components):
+        return None
+
+    known_names = {
+        "padded_melody_duration_total",
+        "final_real_note",
+        "min_real_note_count",
+    }
+    names = tuple(str(getattr(component, "name", "")) for component in components)
+    if any(name not in known_names for name in names):
+        return None
+    if names.count("padded_melody_duration_total") != 1:
+        return None
+    if names.count("final_real_note") > 1 or names.count("min_real_note_count") > 1:
+        return None
+
+    duration_index = names.index("padded_melody_duration_total")
+    final_note_index = names.index("final_real_note") if "final_real_note" in names else None
+    min_note_index = names.index("min_real_note_count") if "min_real_note_count" in names else None
+    duration_acceptor = components[duration_index]
+    target = _padded_melody_duration_target(duration_acceptor)
+    if target is None:
+        return None
+
+    min_notes = 0
+    if min_note_index is not None:
+        inferred_min_notes = _padded_melody_min_notes(components[min_note_index])
+        if inferred_min_notes is None:
+            return None
+        min_notes = inferred_min_notes
+
+    symbols = _graph_edge_symbols(graphs)
+    pad_symbol = _padded_melody_pad_symbol(duration_acceptor, symbols, target)
+    if pad_symbol is None:
+        return None
+
+    symbol_costs = _padded_melody_symbol_costs(
+        duration_acceptor,
+        symbols,
+        target,
+        pad_symbol,
+    )
+    symbol_is_note = _padded_melody_symbol_note_flags(
+        components,
+        final_note_index,
+        min_note_index,
+        symbols,
+        pad_symbol,
+    )
+    if not symbol_costs or not symbol_is_note:
+        return None
+    additive_duration = _padded_melody_has_additive_duration(
+        duration_acceptor,
+        symbol_costs,
+        target,
+        pad_symbol,
+    )
+    cost_note_options = tuple(
+        sorted(
+            {
+                (cost, bool(symbol_is_note[symbol]))
+                for symbol, cost in symbol_costs.items()
+                if symbol != pad_symbol and cost > 0 and symbol in symbol_is_note
+            }
+        )
+    )
+
+    return _PaddedMelodyConstraintSpec(
+        component_acceptors=components,
+        duration_index=duration_index,
+        final_note_index=final_note_index,
+        min_note_index=min_note_index,
+        target=target,
+        min_notes=min_notes,
+        pad_symbol=pad_symbol,
+        symbol_costs=symbol_costs,
+        symbol_is_note=symbol_is_note,
+        additive_duration=additive_duration,
+        cost_note_options=cost_note_options,
+    )
+
+
+def _graph_edge_symbols(graphs: Mapping[int, FixedOrderContextGraph]) -> tuple[Symbol, ...]:
+    symbols = {
+        edge.symbol
+        for graph in graphs.values()
+        for edges in graph.outgoing
+        for edge in edges
+    }
+    return tuple(symbols)
+
+
+def _padded_melody_duration_target(acceptor: DFA) -> int | None:
+    states = getattr(acceptor, "states", None)
+    if states is None:
+        return None
+    totals = [
+        state[0]
+        for state in states
+        if (
+            isinstance(state, tuple)
+            and len(state) == 2
+            and isinstance(state[0], int)
+            and isinstance(state[1], bool)
+        )
+    ]
+    if not totals:
+        return None
+    target = max(totals)
+    if target < 0:
+        return None
+    return int(target)
+
+
+def _padded_melody_min_notes(acceptor: DFA) -> int | None:
+    states = getattr(acceptor, "states", None)
+    if states is None:
+        return None
+    counts = [
+        state[0]
+        for state in states
+        if (
+            isinstance(state, tuple)
+            and len(state) == 2
+            and isinstance(state[0], int)
+            and isinstance(state[1], bool)
+        )
+    ]
+    if not counts:
+        return None
+    return int(max(counts))
+
+
+def _padded_melody_pad_symbol(
+    duration_acceptor: DFA,
+    symbols: Iterable[Symbol],
+    target: int,
+) -> Symbol | None:
+    candidates: list[Symbol] = []
+    target_state = (target, False)
+    for symbol in symbols:
+        try:
+            next_state = duration_acceptor.next_state(target_state, symbol)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if next_state == (target, True):
+            candidates.append(symbol)
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
+def _padded_melody_symbol_costs(
+    duration_acceptor: DFA,
+    symbols: Iterable[Symbol],
+    target: int,
+    pad_symbol: Symbol,
+) -> dict[Symbol, int]:
+    costs: dict[Symbol, int] = {pad_symbol: 0}
+    start_state = (0, False)
+    for symbol in symbols:
+        if symbol == pad_symbol:
+            continue
+        try:
+            next_state = duration_acceptor.next_state(start_state, symbol)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not (
+            isinstance(next_state, tuple)
+            and len(next_state) == 2
+            and isinstance(next_state[0], int)
+            and isinstance(next_state[1], bool)
+        ):
+            continue
+        cost = int(next_state[0])
+        if cost <= 0 or cost > target or bool(next_state[1]):
+            continue
+        costs[symbol] = cost
+    return costs
+
+
+def _padded_melody_has_additive_duration(
+    duration_acceptor: DFA,
+    symbol_costs: Mapping[Symbol, int],
+    target: int,
+    pad_symbol: Symbol,
+) -> bool:
+    representative_by_cost: dict[int, Symbol] = {}
+    for symbol, cost in symbol_costs.items():
+        if symbol == pad_symbol or cost <= 0:
+            continue
+        representative_by_cost.setdefault(cost, symbol)
+    for total in range(target + 1):
+        state = (total, False)
+        for cost, symbol in representative_by_cost.items():
+            expected = (total + cost, False) if total + cost <= target else None
+            try:
+                next_state = duration_acceptor.next_state(state, symbol)
+            except (TypeError, ValueError, KeyError):
+                next_state = None
+            if next_state != expected:
+                return False
+    return True
+
+
+def _padded_melody_symbol_note_flags(
+    components: Sequence[DFA],
+    final_note_index: int | None,
+    min_note_index: int | None,
+    symbols: Iterable[Symbol],
+    pad_symbol: Symbol,
+) -> dict[Symbol, bool]:
+    flags: dict[Symbol, bool] = {}
+    if final_note_index is not None:
+        final_acceptor = components[final_note_index]
+        for symbol in symbols:
+            if symbol == pad_symbol:
+                continue
+            try:
+                next_state = final_acceptor.next_state((False, False), symbol)
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not (
+                isinstance(next_state, tuple)
+                and len(next_state) == 2
+                and isinstance(next_state[0], bool)
+                and isinstance(next_state[1], bool)
+            ):
+                continue
+            if bool(next_state[1]):
+                continue
+            flags[symbol] = bool(next_state[0])
+        return flags
+
+    if min_note_index is not None:
+        min_acceptor = components[min_note_index]
+        for symbol in symbols:
+            if symbol == pad_symbol:
+                continue
+            try:
+                next_state = min_acceptor.next_state((0, False), symbol)
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not (
+                isinstance(next_state, tuple)
+                and len(next_state) == 2
+                and isinstance(next_state[0], int)
+                and isinstance(next_state[1], bool)
+            ):
+                continue
+            if bool(next_state[1]):
+                continue
+            flags[symbol] = int(next_state[0]) > 0
+        return flags
+
+    return {symbol: False for symbol in symbols if symbol != pad_symbol}
 
 
 def run_order_stack_dfa_bp(

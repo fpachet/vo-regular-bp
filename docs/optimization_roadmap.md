@@ -234,6 +234,83 @@ Interpretation:
   before testing them, for example with coarse signature prefiltering and
   eligible-root filtering.
 
+### LSDB Padded Melody Cumulative-Meter Fast Path
+
+Status: implemented first exact pass; stronger duration-view factoring remains
+the next target.
+
+The LSDB pure melody generator uses an exact additive duration constraint with
+absorbing PAD termination, optional minimum real-note count, and optional final
+real-note acceptance. The generic DFA product path represented this as an
+ordinary regular product and spent most preparation time in time-indexed
+recursive beta states.
+
+The current exact specialization recognizes the intersection of these
+component acceptors by name:
+
+- `padded_melody_duration_total`;
+- `final_real_note`;
+- `min_real_note_count`.
+
+When this shape is detected, the regular backward cache:
+
+- extracts the PAD symbol, target duration, symbol duration costs, and
+  note/rest flags from the component DFAs;
+- uses additive suffix tables keyed by remaining slots and remaining duration
+  to reject impossible duration/note-count residuals before expanding context
+  edges;
+- treats completed-duration states as forced PAD suffixes instead of expanding
+  arbitrary non-PAD transitions;
+- stores compact integer memo keys for the residual meter state;
+- groups outgoing context edges by `(duration_cost, is_note)` so all tokens that
+  share the same duration viewpoint reuse the same meter feasibility decision.
+
+Measured on the local LSDB Jobim rebuild with `max_order=3`, `761` vocabulary
+symbols, `21774` context states, and `43748` context edges:
+
+| case | previous prepare | current prepare |
+|---|---:|---:|
+| 16 beats / 16 slots / min 8 notes | about 33.2 s | 3.68 s |
+| 32 beats / 16 slots / min 8 notes | about 99.1 s | 8.08 s |
+| 32 beats / 31 slots / min 14 notes | about 353.2 s | 31.96 s |
+
+Correctness coverage:
+
+- exhaustive tiny-model distribution equality against a manually composed
+  generic product DFA;
+- full existing test suite;
+- LSDB samples checked through the benchmark script with exact total duration,
+  legal trailing PAD behavior, and `success_mass=1.0`.
+
+The remaining issue is that the optimization only factors the meter viewpoint
+inside each concrete Markov context. It still computes beta over many
+`(context, residual_duration, note_count, final_note)` states because symbols
+with the same duration may have different next contexts and probabilities.
+
+Next implementation plan:
+
+1. Build a duration-view quotient for each fixed-order context graph. Two
+   context states are candidates for the same quotient state when their
+   outgoing distributions are equivalent after projecting each edge to
+   `(duration_cost, is_note, is_pad)` and quotient destinations.
+2. Compute beta on the quotient graph, not on every concrete context, whenever
+   the active regular constraint is this additive padded-meter shape.
+3. Preserve exact sampling by refining the chosen quotient transition back to
+   concrete Markov edges with weights
+   `P(symbol | concrete_context) * beta(quotient_dst, residual_after_symbol)`.
+   The quotient is only valid if this refinement gives the same beta value as
+   the concrete recurrence for every member context.
+4. Start with exact partition-refinement/lumping, not approximate merging:
+   iteratively refine quotient classes until all duration-view transition
+   signatures and destination classes match. If few contexts collapse, abandon
+   the quotient for that order and keep the current concrete fast path.
+5. Add diagnostics for quotient class count, concrete-to-quotient compression,
+   duration-category rows, quotient beta states, quotient fallback rate, and
+   refinement time.
+6. Validate against the generic path on tiny exhaustive models where same-cost
+   symbols lead to different next contexts, because that is the failure mode
+   this optimization must avoid.
+
 ## Tried And Rejected
 
 ### Array-Backed Graph Edges
@@ -671,11 +748,13 @@ virtual augmentation with a more compact MAXORDER/product representation.
 
 For the reusable library:
 
-1. Implement compiled sampling tables, preferably lazy or optional.
-2. Add the remaining safe sampling wins around candidate-set copying,
+1. Implement the exact duration-view quotient/lumping path for LSDB-style
+   padded cumulative-meter constraints.
+2. Implement compiled sampling tables, preferably lazy or optional.
+3. Add the remaining safe sampling wins around candidate-set copying,
    `LongestFeasiblePolicy`, and next-acceptor-state reuse.
-3. Try the Continuator integration and let real usage guide API changes.
-4. Consider a shared suffix graph for memory and preparation cleanup.
+4. Try the Continuator integration and let real usage guide API changes.
+5. Consider a shared suffix graph for memory and preparation cleanup.
 
 For paper BP-only performance:
 

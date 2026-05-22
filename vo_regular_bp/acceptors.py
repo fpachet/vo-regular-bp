@@ -234,7 +234,7 @@ def all_of(*acceptors: DFA, name: str = "all_of") -> DFA:
     alphabets = [acceptor.alphabet for acceptor in acceptors if acceptor.alphabet is not None]
     alphabet = set.intersection(*map(set, alphabets)) if alphabets else None
 
-    return DFA(
+    dfa = DFA(
         start_state=start,
         states=states,
         alphabet=alphabet,
@@ -243,6 +243,8 @@ def all_of(*acceptors: DFA, name: str = "all_of") -> DFA:
         accept_func=accepting,
         name=name,
     )
+    dfa.component_acceptors = tuple(acceptors)  # type: ignore[attr-defined]
+    return dfa
 
 
 def transition_weight(acceptor: object, state: State, symbol: Symbol) -> float:
