@@ -102,6 +102,8 @@ from .minimization import (
     minimize_fixed_order_graphs,
 )
 from .order_stack_bp import (
+    DurationViewQuotientDiagnostics,
+    DurationViewQuotientOrderStats,
     LongestFeasiblePolicy,
     OrderStackBPPlan,
     OrderStackBPResult,
@@ -109,6 +111,7 @@ from .order_stack_bp import (
     RegularOrderStackBPPlan,
     RegularOrderStackBPResult,
     SingletonAvoidingBackoffPolicy,
+    padded_melody_duration_view_quotient_diagnostics,
     prepare_order_stack_bp,
     prepare_order_stack_dfa_bp,
     prepare_order_stack_masked_dfa_bp,
@@ -159,6 +162,8 @@ __all__ = [
     "BackendDiagnostics",
     "ConstrainedOrderStackBackend",
     "ConstrainedOrderStackPlan",
+    "DurationViewQuotientDiagnostics",
+    "DurationViewQuotientOrderStats",
     "GeneratedSequence",
     "LongestFeasiblePolicy",
     "OrderStackBPPlan",
@@ -177,6 +182,7 @@ __all__ = [
     "prepare_order_stack_bp",
     "prepare_order_stack_dfa_bp",
     "prepare_order_stack_masked_dfa_bp",
+    "padded_melody_duration_view_quotient_diagnostics",
     "prepare_until_end_order_stack",
     "prepare_until_order_stack",
     "run_constrained_order_stack",

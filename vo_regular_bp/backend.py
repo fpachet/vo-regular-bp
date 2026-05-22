@@ -61,6 +61,18 @@ class BackendDiagnostics:
     regular_beta_cache_misses: int | None = None
     regular_acceptor_symbol_transition_cache_hits: int | None = None
     regular_acceptor_symbol_transition_cache_misses: int | None = None
+    duration_view_quotient_states: int | None = None
+    duration_view_quotient_classes: int | None = None
+    duration_view_quotient_state_reduction: float | None = None
+    duration_view_quotient_edges: int | None = None
+    duration_view_quotient_projected_edges: int | None = None
+    duration_view_quotient_ignored_edges: int | None = None
+    duration_view_quotient_quotient_edges: int | None = None
+    duration_view_quotient_projected_edge_reduction: float | None = None
+    duration_view_quotient_max_class_size: int | None = None
+    duration_view_quotient_refinement_rounds: int | None = None
+    duration_view_quotient_seconds: float | None = None
+    duration_view_quotient_order_stats: tuple[dict[str, object], ...] = ()
     virtual_context_materialization_seconds: float | None = None
     virtual_context_materialization_calls: int | None = None
     virtual_context_materialization_cache_hits: int | None = None
@@ -96,6 +108,34 @@ class BackendDiagnostics:
             ),
             "regular_acceptor_symbol_transition_cache_misses": (
                 self.regular_acceptor_symbol_transition_cache_misses
+            ),
+            "duration_view_quotient_states": self.duration_view_quotient_states,
+            "duration_view_quotient_classes": self.duration_view_quotient_classes,
+            "duration_view_quotient_state_reduction": (
+                self.duration_view_quotient_state_reduction
+            ),
+            "duration_view_quotient_edges": self.duration_view_quotient_edges,
+            "duration_view_quotient_projected_edges": (
+                self.duration_view_quotient_projected_edges
+            ),
+            "duration_view_quotient_ignored_edges": (
+                self.duration_view_quotient_ignored_edges
+            ),
+            "duration_view_quotient_quotient_edges": (
+                self.duration_view_quotient_quotient_edges
+            ),
+            "duration_view_quotient_projected_edge_reduction": (
+                self.duration_view_quotient_projected_edge_reduction
+            ),
+            "duration_view_quotient_max_class_size": (
+                self.duration_view_quotient_max_class_size
+            ),
+            "duration_view_quotient_refinement_rounds": (
+                self.duration_view_quotient_refinement_rounds
+            ),
+            "duration_view_quotient_seconds": self.duration_view_quotient_seconds,
+            "duration_view_quotient_order_stats": (
+                self.duration_view_quotient_order_stats
             ),
             "virtual_context_materialization_seconds": (
                 self.virtual_context_materialization_seconds
@@ -202,6 +242,11 @@ class ConstrainedOrderStackBackend:
         virtual_outgoing_diagnostics = _virtual_graph_outgoing_diagnostics(
             self.result.graphs,
         )
+        duration_view = (
+            self.result.duration_view_quotient_diagnostics
+            if is_regular
+            else None
+        )
         return BackendDiagnostics(
             backend="order_stack_regular" if is_regular else "order_stack_positional",
             length=self.result.length,
@@ -243,6 +288,49 @@ class ConstrainedOrderStackBackend:
                 self.result.regular_acceptor_symbol_transition_cache_misses
                 if is_regular
                 else None
+            ),
+            duration_view_quotient_states=(
+                duration_view.states if duration_view is not None else None
+            ),
+            duration_view_quotient_classes=(
+                duration_view.classes if duration_view is not None else None
+            ),
+            duration_view_quotient_state_reduction=(
+                duration_view.state_reduction if duration_view is not None else None
+            ),
+            duration_view_quotient_edges=(
+                duration_view.edges if duration_view is not None else None
+            ),
+            duration_view_quotient_projected_edges=(
+                duration_view.projected_edges if duration_view is not None else None
+            ),
+            duration_view_quotient_ignored_edges=(
+                duration_view.ignored_edges if duration_view is not None else None
+            ),
+            duration_view_quotient_quotient_edges=(
+                duration_view.quotient_edges if duration_view is not None else None
+            ),
+            duration_view_quotient_projected_edge_reduction=(
+                duration_view.projected_edge_reduction
+                if duration_view is not None
+                else None
+            ),
+            duration_view_quotient_max_class_size=(
+                duration_view.max_class_size if duration_view is not None else None
+            ),
+            duration_view_quotient_refinement_rounds=(
+                duration_view.refinement_rounds if duration_view is not None else None
+            ),
+            duration_view_quotient_seconds=(
+                duration_view.seconds if duration_view is not None else None
+            ),
+            duration_view_quotient_order_stats=(
+                tuple(
+                    stats.as_dict()
+                    for stats in duration_view.orders
+                )
+                if duration_view is not None
+                else ()
             ),
             virtual_context_materialization_seconds=virtual_diagnostics.get(
                 "virtual_context_materialization_seconds",

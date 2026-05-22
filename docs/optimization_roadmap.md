@@ -311,6 +311,25 @@ Next implementation plan:
    symbols lead to different next contexts, because that is the failure mode
    this optimization must avoid.
 
+Diagnostic result, 2026-05-22:
+
+- an exact read-only duration-view quotient diagnostic is now exposed through
+  backend diagnostics for this padded melody fast path;
+- on the local Jobim 32-beat / 16-slot benchmark, the exact quotient compresses
+  `21774` context states to `10666` duration-view classes, a `2.04x` state
+  reduction;
+- projected meter-relevant graph edges compress from `37332` concrete edges to
+  `27755` quotient edges, a `1.35x` projected-edge reduction;
+- the strongest order-specific compression is order 3: `14886` states to
+  `6394` classes (`2.33x`) and `20972` projected edges to `13559` quotient
+  edges (`1.55x`);
+- quotient measurement itself took about `0.67 s` on this benchmark.
+
+Conclusion: exact duration-view factoring is real but moderate on this LSDB
+graph. It is likely worth a careful prototype only after lower-complexity
+remaining-duration/phase cleanup, unless longer horizons show a larger beta
+state reduction than the static graph quotient suggests.
+
 ## Tried And Rejected
 
 ### Array-Backed Graph Edges

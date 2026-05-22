@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 import math
 import random
+import time
 from typing import Hashable, Protocol, TypeAlias
 
 from .acceptors import (
@@ -88,6 +89,110 @@ class _PaddedMelodyState:
     ended: bool
     final_note: bool
     note_count: int
+
+
+@dataclass(frozen=True)
+class DurationViewQuotientOrderStats:
+    """Exact duration-view quotient diagnostics for one fixed-order graph."""
+
+    order: int
+    states: int
+    classes: int
+    edges: int
+    projected_edges: int
+    ignored_edges: int
+    quotient_edges: int
+    category_count: int
+    max_class_size: int
+    refinement_rounds: int
+
+    @property
+    def state_reduction(self) -> float:
+        return _ratio(self.states, self.classes)
+
+    @property
+    def projected_edge_reduction(self) -> float:
+        return _ratio(self.projected_edges, self.quotient_edges)
+
+    def as_dict(self) -> dict[str, int | float]:
+        return {
+            "order": self.order,
+            "states": self.states,
+            "classes": self.classes,
+            "edges": self.edges,
+            "projected_edges": self.projected_edges,
+            "ignored_edges": self.ignored_edges,
+            "quotient_edges": self.quotient_edges,
+            "category_count": self.category_count,
+            "max_class_size": self.max_class_size,
+            "refinement_rounds": self.refinement_rounds,
+            "state_reduction": self.state_reduction,
+            "projected_edge_reduction": self.projected_edge_reduction,
+        }
+
+
+@dataclass(frozen=True)
+class DurationViewQuotientDiagnostics:
+    """Exact quotient-compression diagnostics for additive duration views."""
+
+    orders: tuple[DurationViewQuotientOrderStats, ...]
+    seconds: float
+
+    @property
+    def states(self) -> int:
+        return sum(stats.states for stats in self.orders)
+
+    @property
+    def classes(self) -> int:
+        return sum(stats.classes for stats in self.orders)
+
+    @property
+    def edges(self) -> int:
+        return sum(stats.edges for stats in self.orders)
+
+    @property
+    def projected_edges(self) -> int:
+        return sum(stats.projected_edges for stats in self.orders)
+
+    @property
+    def ignored_edges(self) -> int:
+        return sum(stats.ignored_edges for stats in self.orders)
+
+    @property
+    def quotient_edges(self) -> int:
+        return sum(stats.quotient_edges for stats in self.orders)
+
+    @property
+    def max_class_size(self) -> int:
+        return max((stats.max_class_size for stats in self.orders), default=0)
+
+    @property
+    def refinement_rounds(self) -> int:
+        return max((stats.refinement_rounds for stats in self.orders), default=0)
+
+    @property
+    def state_reduction(self) -> float:
+        return _ratio(self.states, self.classes)
+
+    @property
+    def projected_edge_reduction(self) -> float:
+        return _ratio(self.projected_edges, self.quotient_edges)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "states": self.states,
+            "classes": self.classes,
+            "edges": self.edges,
+            "projected_edges": self.projected_edges,
+            "ignored_edges": self.ignored_edges,
+            "quotient_edges": self.quotient_edges,
+            "max_class_size": self.max_class_size,
+            "refinement_rounds": self.refinement_rounds,
+            "state_reduction": self.state_reduction,
+            "projected_edge_reduction": self.projected_edge_reduction,
+            "seconds": self.seconds,
+            "orders": tuple(stats.as_dict() for stats in self.orders),
+        }
 
 
 @dataclass(frozen=True)
@@ -1791,6 +1896,16 @@ class RegularOrderStackBPResult:
         init=False,
         repr=False,
     )
+    _duration_view_quotient_diagnostics: DurationViewQuotientDiagnostics | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _duration_view_quotient_diagnostics_computed: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
 
     @property
     def context_state_count(self) -> int:
@@ -1853,6 +1968,29 @@ class RegularOrderStackBPResult:
             cache.acceptor_symbol_transition_cache_misses
             for cache in self.backwards.values()
         )
+
+    @property
+    def duration_view_quotient_diagnostics(
+        self,
+    ) -> DurationViewQuotientDiagnostics | None:
+        if self._duration_view_quotient_diagnostics_computed:
+            return self._duration_view_quotient_diagnostics
+        spec = None
+        for cache in self.backwards.values():
+            if cache.padded_melody_spec is not None:
+                spec = cache.padded_melody_spec
+                break
+        if spec is None:
+            spec = _padded_melody_constraint_spec(self.acceptor, self.graphs)
+        if spec is not None:
+            self._duration_view_quotient_diagnostics = (
+                _padded_melody_duration_view_quotient_diagnostics(
+                    self.graphs,
+                    spec,
+                )
+            )
+        self._duration_view_quotient_diagnostics_computed = True
+        return self._duration_view_quotient_diagnostics
 
     @property
     def success_mass(self) -> float:
@@ -2329,6 +2467,113 @@ def _padded_melody_constraint_spec(
     )
 
 
+def padded_melody_duration_view_quotient_diagnostics(
+    graphs: Mapping[int, FixedOrderContextGraph],
+    acceptor: DFA,
+) -> DurationViewQuotientDiagnostics | None:
+    """Measure exact duration-view compression for LSDB-style melody meters.
+
+    The diagnostic projects each concrete symbol edge to its additive meter
+    view: duration cost, note/rest flag, and PAD status. It then computes the
+    coarsest exact quotient whose projected transition masses agree by
+    destination class. This is the quotient a future beta backend could use
+    without changing additive-meter future masses.
+    """
+
+    spec = _padded_melody_constraint_spec(acceptor, graphs)
+    if spec is None:
+        return None
+    return _padded_melody_duration_view_quotient_diagnostics(graphs, spec)
+
+
+def _padded_melody_duration_view_quotient_diagnostics(
+    graphs: Mapping[int, FixedOrderContextGraph],
+    spec: _PaddedMelodyConstraintSpec,
+) -> DurationViewQuotientDiagnostics:
+    started = time.perf_counter()
+    order_stats = tuple(
+        _padded_melody_duration_view_quotient_order_stats(graph, spec)
+        for _order, graph in sorted(graphs.items())
+    )
+    return DurationViewQuotientDiagnostics(
+        orders=order_stats,
+        seconds=time.perf_counter() - started,
+    )
+
+
+def _padded_melody_duration_view_quotient_order_stats(
+    graph: FixedOrderContextGraph,
+    spec: _PaddedMelodyConstraintSpec,
+) -> DurationViewQuotientOrderStats:
+    state_count = len(graph.contexts)
+    classes = [0 for _state in graph.contexts]
+    rounds = 0
+    projected_edge_count = 0
+    ignored_edge_count = 0
+    category_set: set[tuple[int, bool, bool]] = set()
+
+    while True:
+        signatures: list[tuple[tuple[tuple[int, bool, bool], int, tuple[int, int]], ...]] = []
+        projected_edge_count = 0
+        ignored_edge_count = 0
+        category_set.clear()
+        for edges in graph.outgoing:
+            buckets: dict[tuple[tuple[int, bool, bool], int], list[float]] = {}
+            for edge in edges:
+                category = _padded_melody_duration_view_category(edge.symbol, spec)
+                if category is None:
+                    ignored_edge_count += 1
+                    continue
+                projected_edge_count += 1
+                category_set.add(category)
+                buckets.setdefault((category, classes[edge.dst]), []).append(
+                    edge.probability,
+                )
+            signatures.append(
+                tuple(
+                    sorted(
+                        (
+                            category,
+                            dst_class,
+                            _float_key(math.fsum(probabilities)),
+                        )
+                        for (category, dst_class), probabilities in buckets.items()
+                    )
+                )
+            )
+        new_classes, counts = _classes_from_signatures(signatures)
+        rounds += 1
+        if new_classes == classes:
+            representatives = _representative_states(new_classes)
+            quotient_edges = sum(len(signatures[state]) for state in representatives)
+            return DurationViewQuotientOrderStats(
+                order=graph.order,
+                states=state_count,
+                classes=len(counts),
+                edges=graph.edge_count,
+                projected_edges=projected_edge_count,
+                ignored_edges=ignored_edge_count,
+                quotient_edges=quotient_edges,
+                category_count=len(category_set),
+                max_class_size=max(counts or [0]),
+                refinement_rounds=rounds,
+            )
+        classes = new_classes
+
+
+def _padded_melody_duration_view_category(
+    symbol: Symbol,
+    spec: _PaddedMelodyConstraintSpec,
+) -> tuple[int, bool, bool] | None:
+    if symbol == spec.pad_symbol:
+        return (0, False, True)
+    cost = spec.symbol_costs.get(symbol)
+    is_note = spec.symbol_is_note.get(symbol)
+    if cost is None or is_note is None or cost <= 0:
+        return None
+    return (int(cost), bool(is_note), False)
+
+
 def _graph_edge_symbols(graphs: Mapping[int, FixedOrderContextGraph]) -> tuple[Symbol, ...]:
     symbols = {
         edge.symbol
@@ -2503,6 +2748,40 @@ def _padded_melody_symbol_note_flags(
         return flags
 
     return {symbol: False for symbol in symbols if symbol != pad_symbol}
+
+
+def _classes_from_signatures(
+    signatures: Sequence[Hashable],
+) -> tuple[list[int], list[int]]:
+    class_ids: dict[Hashable, int] = {}
+    classes: list[int] = []
+    counts: list[int] = []
+    for signature in signatures:
+        class_id = class_ids.get(signature)
+        if class_id is None:
+            class_id = len(class_ids)
+            class_ids[signature] = class_id
+            counts.append(0)
+        classes.append(class_id)
+        counts[class_id] += 1
+    return classes, counts
+
+
+def _representative_states(classes: Sequence[int]) -> list[int]:
+    representatives: dict[int, int] = {}
+    for state, class_id in enumerate(classes):
+        representatives.setdefault(class_id, state)
+    return [representatives[class_id] for class_id in range(len(representatives))]
+
+
+def _float_key(value: float) -> tuple[int, int]:
+    return float(value).as_integer_ratio()
+
+
+def _ratio(numerator: int, denominator: int) -> float:
+    if denominator == 0:
+        return float("inf") if numerator else 1.0
+    return float(numerator) / float(denominator)
 
 
 def run_order_stack_dfa_bp(

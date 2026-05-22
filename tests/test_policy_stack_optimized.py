@@ -10,11 +10,14 @@ from vo_regular_bp import (
     all_of,
     append_padding,
     dense_forbidden_substring_acceptor,
+    exact_fixed_order_graph_quotient_stats,
     forbidden_substring_acceptor,
+    padded_melody_duration_view_quotient_diagnostics,
     positional_acceptor,
     run_order_stack_dfa_bp,
     run_order_stack_masked_dfa_bp,
 )
+from vo_regular_bp.order_stack_bp import FixedOrderContextGraph, StackEdge
 
 
 def test_masked_dense_policy_stack_matches_generic_composite_distribution():
@@ -155,6 +158,48 @@ def test_padded_melody_fast_path_matches_generic_product_distribution():
     assert sum(1 for symbol in visible if symbol.startswith("N")) >= min_notes
     assert visible[-1].startswith("N")
     assert all(symbol == pad for symbol in sample[first_pad:])
+
+
+def test_duration_view_quotient_reports_exact_compression():
+    pad = "<PAD>"
+    graph = FixedOrderContextGraph(order=1)
+    graph.contexts = [("A",), ("B",)]
+    graph.context_to_id = {("A",): 0, ("B",): 1}
+    graph.outgoing = [
+        [
+            StackEdge(0, 0, "N1", 0.50, 1),
+            StackEdge(0, 1, "N2", 0.25, 1),
+            StackEdge(0, 0, pad, 0.25, 1),
+        ],
+        [
+            StackEdge(1, 1, "N3", 0.50, 1),
+            StackEdge(1, 0, "N4", 0.25, 1),
+            StackEdge(1, 1, pad, 0.25, 1),
+        ],
+    ]
+    duration_acceptor = _lsdb_style_duration_acceptor(
+        {"N1": 1, "N2": 1, "N3": 1, "N4": 1},
+        pad_symbol=pad,
+        target=2,
+    )
+    acceptor = all_of(
+        duration_acceptor,
+        _lsdb_style_final_note_acceptor(pad_symbol=pad),
+    )
+
+    ordinary = exact_fixed_order_graph_quotient_stats(graph)
+    duration_view = padded_melody_duration_view_quotient_diagnostics(
+        {1: graph},
+        acceptor,
+    )
+
+    assert ordinary.classes == 2
+    assert duration_view is not None
+    assert duration_view.states == 2
+    assert duration_view.classes == 1
+    assert duration_view.state_reduction == 2.0
+    assert duration_view.projected_edges == 6
+    assert duration_view.quotient_edges == 2
 
 
 def _policy_stack_probability(result, sequence):
