@@ -20,6 +20,7 @@ from typing import Hashable, Protocol, TypeAlias
 
 from .acceptors import (
     DFA,
+    all_of,
     has_custom_transition_weights,
     transition_weight as regular_transition_weight,
 )
@@ -792,6 +793,34 @@ class OrderStackBPPlan:
             graphs=self.graphs,
             backwards=self.backwards,
             policy=self.policy,
+        )
+
+    def with_regular_acceptor(
+        self,
+        acceptor: DFA,
+        *,
+        start_acceptor_state: Hashable | None = None,
+    ) -> "RegularOrderStackBPPlan":
+        """Layer a regular acceptor over this positional plan's source graphs.
+
+        The returned regular plan has fresh regular memo tables. It reuses the
+        already-compiled order-stack graphs and positional masks from this plan.
+        """
+
+        acceptor0 = (
+            acceptor.start_state
+            if start_acceptor_state is None
+            else start_acceptor_state
+        )
+        return _regular_plan_from_graphs(
+            model=self.model,
+            length=self.length,
+            acceptor=acceptor,
+            start_acceptor_state=acceptor0,
+            graphs=self.graphs,
+            policy=self.policy,
+            constraints=self.constraints,
+            allowed_forbidden_symbols=self.allowed_forbidden_symbols,
         )
 
 
@@ -2225,6 +2254,74 @@ class RegularOrderStackBPPlan:
         )
         result.start_order_masses()
         return result
+
+    def with_soft_acceptor(
+        self,
+        soft_acceptor: DFA,
+        *,
+        start_acceptor_state: Hashable | None = None,
+        name: str = "hard_soft_support",
+    ) -> "RegularOrderStackBPPlan":
+        """Return a fresh-cache plan for this hard acceptor plus soft weights.
+
+        The hard plan's source graphs, positional masks, and policy are reused.
+        Regular transition rows and beta memo tables are deliberately new so a
+        changing soft acceptor cannot observe stale transition weights.
+        """
+
+        acceptor = all_of(self.acceptor, soft_acceptor, name=name)
+        acceptor0 = (
+            (self.start_acceptor_state, soft_acceptor.start_state)
+            if start_acceptor_state is None
+            else start_acceptor_state
+        )
+        return _regular_plan_from_graphs(
+            model=self.model,
+            length=self.length,
+            acceptor=acceptor,
+            start_acceptor_state=acceptor0,
+            graphs=self.graphs,
+            policy=self.policy,
+            constraints=self.constraints,
+            allowed_forbidden_symbols=self.allowed_forbidden_symbols,
+        )
+
+
+def _regular_plan_from_graphs(
+    *,
+    model: OrderStackModel,
+    length: int,
+    acceptor: DFA,
+    start_acceptor_state: Hashable,
+    graphs: dict[int, FixedOrderContextGraph],
+    policy: OrderPolicy,
+    constraints: PositionConstraints,
+    allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]],
+) -> RegularOrderStackBPPlan:
+    padded_melody_spec = _padded_melody_constraint_spec(acceptor, graphs)
+    backwards = {
+        order: _RegularBackwardCache(
+            graph,
+            acceptor,
+            length,
+            constraints=constraints,
+            forbidden_symbols=model.forbidden_symbols,
+            allowed_forbidden_symbols=allowed_forbidden_symbols,
+            padded_melody_spec=padded_melody_spec,
+        )
+        for order, graph in graphs.items()
+    }
+    return RegularOrderStackBPPlan(
+        model=model,
+        length=length,
+        acceptor=acceptor,
+        start_acceptor_state=start_acceptor_state,
+        graphs=graphs,
+        backwards=backwards,
+        policy=policy,
+        constraints=constraints,
+        allowed_forbidden_symbols=allowed_forbidden_symbols,
+    )
 
 
 def _sample_from_weighted_edges(

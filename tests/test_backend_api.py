@@ -10,12 +10,31 @@ from vo_regular_bp import (
     LongestFeasiblePolicy,
     MeterConstraint,
     OrderStackModel,
+    WeightedDFA,
+    combine_constraints,
     prepare_constrained_order_stack,
     prepare_constrained_order_stack_plan,
     prepare_constrained_order_stack_plan_from_sequences,
+    prepare_constrained_order_stack_support_plan_from_sequences,
     prepare_constrained_order_stack_from_sequences,
     run_constrained_order_stack,
 )
+
+
+class MutableSymbolWeightedDFA(WeightedDFA):
+    def __init__(self, weights=None):
+        super().__init__(
+            start_state=0,
+            accept_states={0},
+            states={0},
+            alphabet=("A", "B"),
+            transition_func=lambda _state, _symbol: 0,
+            name="mutable_symbol_weighted",
+        )
+        self.weights = dict(weights or {})
+
+    def transition_weight(self, _state, symbol) -> float:
+        return float(self.weights.get(symbol, 1.0))
 
 
 def test_backend_positional_only_uses_masks():
@@ -255,3 +274,78 @@ def test_prefixless_regular_plan_reuses_backward_cache_across_prefixes():
         tuple(sample[index : index + 3]) not in forbidden
         for index in range(len(sample) - 2)
     )
+
+
+def test_support_plan_layers_dynamic_soft_acceptors_with_fresh_caches():
+    training = [
+        ("S", "A", "A"),
+        ("S", "A", "B"),
+        ("S", "B", "A"),
+        ("S", "B", "B"),
+    ]
+    hard = ConstraintSet(forbidden_substrings=(("B", "B"),))
+    prefix = ("S",)
+    support = prepare_constrained_order_stack_support_plan_from_sequences(
+        training,
+        hard,
+        max_order=1,
+        length=2,
+        policy=LongestFeasiblePolicy(),
+        alphabet=("A", "B"),
+    )
+
+    soft = MutableSymbolWeightedDFA({"A": 4.0})
+    backend_a = support.with_soft_acceptor(soft, prefix=prefix)
+    direct_a = prepare_constrained_order_stack_from_sequences(
+        training,
+        combine_constraints(
+            hard,
+            ConstraintSet(regular_acceptors=(MutableSymbolWeightedDFA({"A": 4.0}),)),
+        ),
+        max_order=1,
+        length=2,
+        prefix=prefix,
+        policy=LongestFeasiblePolicy(),
+        alphabet=("A", "B"),
+    )
+
+    soft.weights = {"B": 4.0}
+    backend_b = support.with_soft_acceptor(soft, prefix=prefix)
+    direct_b = prepare_constrained_order_stack_from_sequences(
+        training,
+        combine_constraints(
+            hard,
+            ConstraintSet(regular_acceptors=(MutableSymbolWeightedDFA({"B": 4.0}),)),
+        ),
+        max_order=1,
+        length=2,
+        prefix=prefix,
+        policy=LongestFeasiblePolicy(),
+        alphabet=("A", "B"),
+    )
+
+    first_a_probability = _first_symbol_probability(backend_a, "A")
+    first_b_probability = _first_symbol_probability(backend_b, "A")
+    assert math.isclose(first_a_probability, _first_symbol_probability(direct_a, "A"))
+    assert math.isclose(first_b_probability, _first_symbol_probability(direct_b, "A"))
+    assert first_a_probability > first_b_probability
+
+    hard_graph = support.plan.plan.graphs[1]
+    assert backend_a.result.graphs[1] is hard_graph
+    assert backend_b.result.graphs[1] is hard_graph
+    assert backend_a.result.backwards[1] is not backend_b.result.backwards[1]
+
+    for backend in (backend_a, backend_b):
+        samples = backend.sample_many(200, rng=random.Random(7))
+        assert ("B", "B") not in samples
+
+
+def _first_symbol_probability(backend, symbol) -> float:
+    result = backend.result
+    candidate_set = result._candidate_sets(0, ("S",), result.start_acceptor_state)[0]
+    total = sum(candidate_set.weights)
+    return sum(
+        weight
+        for edge, weight in zip(candidate_set.edges, candidate_set.weights)
+        if edge.symbol == symbol
+    ) / total

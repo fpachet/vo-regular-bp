@@ -13,6 +13,7 @@ from collections.abc import Callable, Hashable, Iterable, Sequence
 from dataclasses import dataclass
 import random
 
+from .acceptors import DFA
 from .constraint_builders import combine_constraints
 from .constraints import ConstraintSet, compile_constraints
 from .context import Symbol
@@ -439,6 +440,67 @@ class ConstrainedOrderStackPlan:
 
 
 @dataclass(frozen=True)
+class ConstrainedOrderStackSupportPlan:
+    """Reusable hard-support plan for dynamic soft regular acceptors.
+
+    The wrapped hard plan owns the compiled source/order-stack graphs and stable
+    constraints. ``with_soft_acceptor`` creates a prefix-bound backend with fresh
+    regular caches so changing soft weights or topology cannot reuse stale beta
+    values.
+    """
+
+    plan: ConstrainedOrderStackPlan
+
+    @property
+    def length(self) -> int:
+        return self.plan.length
+
+    @property
+    def is_regular(self) -> bool:
+        return self.plan.is_regular
+
+    def for_prefix(self, prefix: Sequence[Symbol]) -> ConstrainedOrderStackBackend:
+        """Bind the hard-only support plan to a prefix."""
+
+        return self.plan.for_prefix(prefix)
+
+    def with_soft_acceptor(
+        self,
+        soft_acceptor: DFA | None,
+        *,
+        prefix: Sequence[Symbol],
+        soft_start_acceptor_state: Hashable | None = None,
+    ) -> ConstrainedOrderStackBackend:
+        """Bind a dynamic soft acceptor on top of the cached hard support.
+
+        Passing ``None`` samples from the hard support only. For a real soft
+        acceptor, the returned backend has new regular transition-row and beta
+        caches but reuses the source/order-stack graphs and stable masks.
+        """
+
+        if soft_acceptor is None:
+            return self.for_prefix(prefix)
+
+        lower_plan = self.plan.plan
+        soft0 = (
+            soft_acceptor.start_state
+            if soft_start_acceptor_state is None
+            else soft_start_acceptor_state
+        )
+        if isinstance(lower_plan, RegularOrderStackBPPlan):
+            soft_plan = lower_plan.with_soft_acceptor(
+                soft_acceptor,
+                start_acceptor_state=(lower_plan.start_acceptor_state, soft0),
+            )
+        else:
+            soft_plan = lower_plan.with_regular_acceptor(
+                soft_acceptor,
+                start_acceptor_state=soft0,
+            )
+        return ConstrainedOrderStackBackend(soft_plan.for_prefix(prefix))
+
+
+@dataclass(frozen=True)
 class UntilOrderStackBackend:
     """Prepared reusable first-hit order-stack sampler."""
 
@@ -619,6 +681,33 @@ def prepare_constrained_order_stack_plan(
     )
 
 
+def prepare_constrained_order_stack_support_plan(
+    model: OrderStackModel,
+    constraints: ConstraintSet | None = None,
+    *,
+    length: int,
+    policy: OrderPolicy | None = None,
+    alphabet: Iterable[Symbol] | None = None,
+    prefer_dense_forbidden: bool = True,
+    allowed_forbidden_symbols: AllowedForbiddenSymbols | None = None,
+    minimize_source_graphs: bool = False,
+) -> ConstrainedOrderStackSupportPlan:
+    """Prepare hard support once for repeated dynamic soft regular weighting."""
+
+    return ConstrainedOrderStackSupportPlan(
+        prepare_constrained_order_stack_plan(
+            model,
+            constraints,
+            length=length,
+            policy=policy,
+            alphabet=alphabet,
+            prefer_dense_forbidden=prefer_dense_forbidden,
+            allowed_forbidden_symbols=allowed_forbidden_symbols,
+            minimize_source_graphs=minimize_source_graphs,
+        )
+    )
+
+
 def prepare_constrained_order_stack(
     model: OrderStackModel,
     constraints: ConstraintSet | None = None,
@@ -692,6 +781,37 @@ def prepare_constrained_order_stack_plan_from_sequences(
         alphabet=alphabet,
         prefer_dense_forbidden=prefer_dense_forbidden,
         minimize_source_graphs=minimize_source_graphs,
+    )
+
+
+def prepare_constrained_order_stack_support_plan_from_sequences(
+    sequences: Iterable[Sequence[Symbol]],
+    constraints: ConstraintSet | None = None,
+    *,
+    max_order: int,
+    length: int,
+    policy: OrderPolicy | None = None,
+    start_symbol: Symbol | None = None,
+    end_symbol: Symbol | None = None,
+    alphabet: Iterable[Symbol] | None = None,
+    prefer_dense_forbidden: bool = True,
+    minimize_source_graphs: bool = False,
+) -> ConstrainedOrderStackSupportPlan:
+    """Build an order-stack model once and prepare reusable hard support."""
+
+    return ConstrainedOrderStackSupportPlan(
+        prepare_constrained_order_stack_plan_from_sequences(
+            sequences,
+            constraints,
+            max_order=max_order,
+            length=length,
+            policy=policy,
+            start_symbol=start_symbol,
+            end_symbol=end_symbol,
+            alphabet=alphabet,
+            prefer_dense_forbidden=prefer_dense_forbidden,
+            minimize_source_graphs=minimize_source_graphs,
+        )
     )
 
 
