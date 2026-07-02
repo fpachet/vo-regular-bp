@@ -14,6 +14,28 @@ the regular language whenever the constrained mass is nonzero.
 The repository also contains specialized engines and experiments for positional
 constraints and Continuator-style order-stack backoff policies.
 
+## Paper
+
+If you use this library or the accompanying experiments, please cite the
+corresponding arXiv paper:
+
+Pachet, F. (2026). *Exact Regular-Constrained Variable-Order Markov Generation
+via Sparse Context-State Belief Propagation*. arXiv:2605.07839.
+https://doi.org/10.48550/arXiv.2605.07839
+
+```bibtex
+@misc{pachet2026exactregularconstrainedvariableorder,
+  title = {Exact Regular-Constrained Variable-Order Markov Generation via Sparse Context-State Belief Propagation},
+  author = {Pachet, Fran{\c{c}}ois},
+  year = {2026},
+  eprint = {2605.07839},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.AI},
+  doi = {10.48550/arXiv.2605.07839},
+  url = {https://arxiv.org/abs/2605.07839},
+}
+```
+
 ## Install
 
 The package has no declared runtime dependencies and requires Python 3.10 or
