@@ -330,6 +330,34 @@ graph. It is likely worth a careful prototype only after lower-complexity
 remaining-duration/phase cleanup, unless longer horizons show a larger beta
 state reduction than the static graph quotient suggests.
 
+### LSDB Virtual Order-Stack Hot Path
+
+Status: implemented.
+
+The LSDB / FlowComposer melody workload using
+`VirtualAugmentedOrderStackModel`, 12 chromatic transpositions, string
+pitch-duration symbols, and an integrated duration/motion DFA now has a faster
+regular order-stack preparation path.
+
+Implemented changes:
+
+- lazy materialization of virtual fixed-order contexts, so unused higher-order
+  context sets are not built during prefix-independent plan preparation;
+- cached transformed and inverse-transformed symbols inside
+  `VirtualAugmentedOrderStackModel`;
+- per-DFA-state symbol transition caching in the regular backward cache;
+- direct callable transition/weight fast paths for ordinary `DFA` instances;
+- beta memo-hit checks inside the edge loop before recursive calls;
+- compact internal transition triples instead of per-edge dataclass allocation;
+- additive diagnostics for virtual context, augmented count, transition-row,
+  beta-cache, and acceptor-symbol cache activity.
+
+Measured on the synthetic LSDB-shaped weighted benchmark, mean preparation time
+improved from about `4.23 s` to about `2.66 s` over repeated local runs, with
+the same product-state and accepted-transition counts. The benchmark and full
+details are in
+`reports/lsdb_virtual_order_stack_optimization_2026_05_20.md`.
+
 ## Tried And Rejected
 
 ### Array-Backed Graph Edges

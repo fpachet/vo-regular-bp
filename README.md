@@ -576,6 +576,7 @@ Rendered experiment notes are in `reports/`, including:
 - `reports/optimization_report.md`
 - `reports/bach_contextbp_final_compare.md`
 - `reports/bach_policy_backoff_paper_results.md`
+- `reports/lsdb_virtual_order_stack_optimization_2026_05_20.md`
 
 ## Semantics Note
 

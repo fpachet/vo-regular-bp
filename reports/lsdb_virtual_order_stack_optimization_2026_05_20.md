@@ -152,4 +152,4 @@ python -m py_compile scripts/bench_lsdb_virtual_order_stack.py
 python scripts/bench_lsdb_virtual_order_stack.py --weighted --repeats 3
 ```
 
-`pytest -q` passed: `80 passed`.
+`python -m pytest -q` passed: `83 passed`.
