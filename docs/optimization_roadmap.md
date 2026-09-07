@@ -786,6 +786,68 @@ regular-BP graph materialization, but it does not yet reduce product-edge
 expansions for the Bach MAXORDER query. Further gains would require combining
 virtual augmentation with a more compact MAXORDER/product representation.
 
+## Next-Round Performance Opportunities
+
+The September implementation leaves meaningful opportunities in cold sampling
+and peak memory. The full LSDB implementation-only lifecycle measured a first
+sample at 13.39 seconds and peak RSS of about 1.46 GiB through subsequent plain
+and trace sampling. These are different lifecycle measurements: the memory peak
+is not attributed to the first sample alone. See the
+[implementation report](../reports/implementation_results_2026_09_07.md) for
+the workload and measurement limitations.
+
+The following are **experimental targets, not measured forecasts or promised
+gains**. They should guide whether prototypes are worth retaining.
+
+| Area | Candidate opportunity | Experimental target |
+|---|---|---|
+| First-sample latency | Reduce repeated work during lazy product expansion and specialize dominant transition operations | 1.5–2× faster |
+| Peak lifecycle memory | Compact product-state keys and message storage; reduce retained symbol/transition caches | 25–50% lower |
+| Repeated sampling | Lazily precompute cumulative sampling weights for frequently revisited states | Smaller incremental gains; measure against the completed fast paths |
+
+Applied to the reported full LSDB observation, the first two targets would mean
+roughly 7–9 seconds for the first sample and 0.7–1.1 GiB peak lifecycle RSS on
+the same machine. Establish a repeated baseline before assessing these targets;
+the existing full-lifecycle observation is a single run. Gains across rows are
+not independent and should not be assumed to occur together.
+
+### What Determines the Available Gain
+
+The central uncertainty is how much cost comes from repeated bookkeeping versus
+distinct constrained states that exact sampling must evaluate. More compact
+storage, shared computations, and better cache retention can reduce bookkeeping.
+Reducing the number of distinct states requires a validated exact quotient or
+another algorithmic change that preserves the constrained distribution.
+
+Cache changes trade memory against recomputation: retaining fewer transitions
+can lower RSS while slowing cold or repeated samples. Conversely, cumulative
+sampling tables add storage and preparation work. Evaluate total lifecycle cost
+for the intended usage, including the first trace, rather than selecting an
+optimization from preparation-only or warm-sampling timings.
+
+### Investigation Sequence
+
+1. Profile the full cold-sampling lifecycle, separating preparation, first
+   sample, subsequent samples, and cold/warm traces. Attribute retained memory
+   to source graphs, beta messages, product keys, DFA-symbol transitions, and
+   candidate caches. Keep allocation tracing separate from ordinary timings.
+2. Prototype the largest identifiable source of avoidable work or storage.
+   Choose compact storage, cache policy changes, or an exact duration-view
+   quotient based on the profile; avoid combining speculative rewrites before
+   measuring their individual effects.
+3. Compare fresh-process repeated runs against the post-September implementation
+   using `scripts/bench_backend_lifecycle.py`. Include full LSDB, smaller LSDB,
+   and Bach so that gains on large inputs do not hide common-case regressions.
+   Retain the correctness and distribution checks listed below.
+4. If Python execution remains dominant, assess an optional compiled backend
+   while keeping the dependency-free reference implementation. Earlier array
+   and dense-key prototypes regressed performance, so representation changes
+   alone are not evidence of a speedup.
+
+Downstream application use should determine the priority among first-sample
+latency, memory limits, and integration ergonomics. These are follow-up
+experiments, separate from the completed correctness and performance plan.
+
 ## Priority Recommendation
 
 For the reusable library:
