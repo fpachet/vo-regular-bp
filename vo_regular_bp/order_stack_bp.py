@@ -25,6 +25,7 @@ from .acceptors import (
     transition_weight as regular_transition_weight,
 )
 from .context import Context, Symbol, _as_context
+from ._numerics import NEG_INF, log_backward, log_mass, log_sum, mass_from_log, relative_weights
 from .minimization import minimize_fixed_order_graph, minimize_fixed_order_graphs
 from .positional_bp import (
     AllowedForbiddenSymbols,
@@ -48,6 +49,39 @@ _RegularTransition: TypeAlias = tuple[StackEdge, Hashable, float]
 
 _TRANSITION_CACHE_MISSING = object()
 _TRANSITION_REJECTED = object()
+
+
+class _TransitionRows(dict):
+    """Admission cache bounded by retained transitions, not just row count.
+
+    Small recurrent products fit entirely; one-shot large products do not
+    retain millions of triples. Once full, new rows are evaluated transiently;
+    this avoids eviction churn during depth-first BP. Empty rows cost one unit.
+    """
+
+    def __init__(self, max_entries: int = 65536):
+        super().__init__()
+        if max_entries < 0:
+            raise ValueError("max_entries must be non-negative")
+        self.max_entries = max_entries
+        self.entries = 0
+        self.skipped_rows = 0
+
+    def __setitem__(self, key, row):
+        size = max(1, len(row))
+        if self.entries + size > self.max_entries:
+            self.skipped_rows += 1
+            return
+        old = self.get(key)
+        if old is not None:
+            self.entries -= max(1, len(old))
+        super().__setitem__(key, row)
+        self.entries += size
+
+    def clear(self):
+        super().clear()
+        self.entries = 0
+        self.skipped_rows = 0
 
 
 @dataclass(frozen=True)
@@ -621,6 +655,8 @@ class OrderStackBPResult:
         repr=False,
     )
 
+    _first_candidate_cache: dict = field(default_factory=dict, init=False, repr=False)
+
     @property
     def context_state_count(self) -> int:
         return sum(len(graph.contexts) for graph in self.graphs.values())
@@ -635,6 +671,8 @@ class OrderStackBPResult:
 
     @property
     def success_mass(self) -> float:
+        if self.length == 0:
+            return 1.0
         return 1.0 if self._candidate_sets(0, self.prefix) else 0.0
 
     def start_order_masses(self) -> tuple[tuple[int, float], ...]:
@@ -645,6 +683,21 @@ class OrderStackBPResult:
             state = graph.state_id(tuple(self.prefix[-order:]))
             mass = self.backwards[order][0][state] if state is not None else 0.0
             masses.append((order, mass))
+        return tuple(masses)
+
+    def start_log_order_masses(self) -> tuple[tuple[int, float], ...]:
+        masses = []
+        for order in range(1, min(self.model.max_order, len(self.prefix)) + 1):
+            state = self.graphs[order].state_id(self.prefix[-order:])
+            logs = getattr(self.backwards[order], "log_values", None)
+            value = (
+                NEG_INF
+                if state is None
+                else logs[0][state]
+                if logs is not None
+                else log_mass(self.backwards[order][0][state])
+            )
+            masses.append((order, value))
         return tuple(masses)
 
     def sample_with_trace(
@@ -670,30 +723,39 @@ class OrderStackBPResult:
 
         return tuple(output), tuple(trace)
 
-    def sample_with_orders(
-        self,
-        *,
-        rng: random.Random | int | None = None,
-    ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
+    def _sample_plain(self, rng, include_orders):
         generator = _coerce_rng(rng)
-        history = list(self.prefix)
-        output: list[Symbol] = []
-        orders: list[int] = []
-
+        history = list(self.prefix[-self.model.max_order :])
+        output = []
+        orders = [] if include_orders else None
+        longest = type(self.policy) is LongestFeasiblePolicy
         for position in range(self.length):
-            candidate_sets = self._candidate_sets(position, history)
-            choice = self.policy.choose(candidate_sets, generator)
-            if choice is None:
-                raise ValueError("No context path satisfies the constraints at any order.")
-            edge = choice.edge
+            candidate_sets = self._candidate_sets(position, history, first_only=longest)
+            if longest:
+                if not candidate_sets:
+                    raise ValueError("No order has positive constrained future mass.")
+                candidate = candidate_sets[0]
+                edge = _sample_from_weighted_edges(
+                    candidate.edges, candidate.weights, candidate.cumulative_weights, generator
+                )
+            else:
+                choice = self.policy.choose(candidate_sets, generator)
+                if choice is None:
+                    raise ValueError("No order has positive constrained future mass.")
+                candidate, edge = choice.candidate_set, choice.edge
             output.append(edge.symbol)
-            orders.append(edge.order)
+            if orders is not None:
+                orders.append(edge.order)
             history.append(edge.symbol)
+        return (tuple(output), tuple(orders)) if orders is not None else tuple(output)
 
-        return tuple(output), tuple(orders)
+    def sample_with_orders(
+        self, *, rng: random.Random | int | None = None
+    ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
+        return self._sample_plain(rng, True)
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
-        return self.sample_with_orders(rng=rng)[0]
+        return self._sample_plain(rng, False)
 
     def sample_many_with_orders(
         self,
@@ -704,12 +766,15 @@ class OrderStackBPResult:
         generator = _coerce_rng(rng)
         return [self.sample_with_orders(rng=generator) for _ in range(count)]
 
-    def _candidate_sets(self, position: int, history: Sequence[Symbol]) -> list[OrderCandidateSet]:
+    def _candidate_sets(
+        self, position: int, history: Sequence[Symbol], *, first_only: bool = False
+    ) -> Sequence[OrderCandidateSet]:
         history_key = tuple(history[-self.model.max_order :])
         cache_key = (position, history_key)
-        cached = self._candidate_set_cache.get(cache_key)
+        candidate_cache = self._first_candidate_cache if first_only else self._candidate_set_cache
+        cached = candidate_cache.get(cache_key)
         if cached is not None:
-            return list(cached)
+            return cached if first_only else list(cached)
 
         candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
@@ -755,6 +820,24 @@ class OrderStackBPResult:
                         continue
                     candidates.append(edge)
                     weights.append(weight)
+            log_table = getattr(self.backwards[order], "log_values", None)
+            if log_table is not None:
+                candidates = []
+                logs = []
+                for edge in graph.outgoing[state]:
+                    if _is_forbidden(edge.symbol, self.model.forbidden_symbols, allowed_forbidden):
+                        continue
+                    if constraint is not None and not (
+                        constraint(edge.symbol)
+                        if callable(constraint)
+                        else edge.symbol in constraint
+                    ):
+                        continue
+                    value = log_mass(edge.probability) + log_table[position + 1][edge.dst]
+                    if value != NEG_INF:
+                        candidates.append(edge)
+                        logs.append(value)
+                weights = list(relative_weights(logs))
             if candidates:
                 candidate_sets.append(
                     OrderCandidateSet(
@@ -765,7 +848,9 @@ class OrderStackBPResult:
                         weights=tuple(weights),
                     )
                 )
-        self._candidate_set_cache[cache_key] = tuple(candidate_sets)
+                if first_only:
+                    break
+        candidate_cache[cache_key] = tuple(candidate_sets)
         return candidate_sets
 
 
@@ -892,6 +977,10 @@ def run_order_stack_bp(
     ).for_prefix(prefix)
 
 
+class _BackwardTable(list):
+    log_values = None
+
+
 def _backward_messages(
     graph: FixedOrderContextGraph,
     *,
@@ -900,7 +989,8 @@ def _backward_messages(
     forbidden_symbols: frozenset[Symbol],
     allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]],
 ) -> list[list[float]]:
-    backward = [[0.0 for _ in graph.contexts] for _ in range(length + 1)]
+    backward = _BackwardTable([[0.0 for _ in graph.contexts] for _ in range(length + 1)])
+    needs_log = False
     for state in range(len(graph.contexts)):
         backward[length][state] = 1.0
 
@@ -935,6 +1025,48 @@ def _backward_messages(
                     if edge.symbol in constraint:
                         total += edge.probability * beta_next[edge.dst]
                 beta[state] = total
+        if any(0 < value < 1e-200 for value in beta):
+            needs_log = True
+        if not needs_log:
+            needs_log = any(
+                edge.probability > 0
+                and beta_next[edge.dst] > 0
+                and not _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden)
+                and (
+                    constraint is None
+                    or (
+                        constraint(edge.symbol)
+                        if callable(constraint)
+                        else edge.symbol in constraint
+                    )
+                )
+                for state, value in enumerate(beta)
+                if value == 0
+                for edge in graph.outgoing[state]
+            )
+    if needs_log:
+        logs = [[NEG_INF] * len(graph.contexts) for _ in range(length + 1)]
+        logs[length] = [0.0] * len(graph.contexts)
+        for position in range(length - 1, -1, -1):
+            constraint = constraints.get(position)
+            allowed = allowed_forbidden_symbols.get(position, frozenset())
+            for state, edges in enumerate(graph.outgoing):
+                value = log_sum(
+                    log_mass(edge.probability) + logs[position + 1][edge.dst]
+                    for edge in edges
+                    if not _is_forbidden(edge.symbol, forbidden_symbols, allowed)
+                    and (
+                        constraint is None
+                        or (
+                            constraint(edge.symbol)
+                            if callable(constraint)
+                            else edge.symbol in constraint
+                        )
+                    )
+                )
+                logs[position][state] = value
+                backward[position][state] = mass_from_log(value)
+        backward.log_values = logs
     return backward
 
 
@@ -1005,7 +1137,10 @@ class _RegularBackwardCache:
     allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]] = field(default_factory=dict)
     padded_melody_spec: _PaddedMelodyConstraintSpec | None = None
     memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
-    transition_rows: dict[tuple[int, Hashable], tuple[_RegularTransition, ...]] = field(default_factory=dict)
+    log_memo: dict[tuple[int, int, Hashable], float] = field(default_factory=dict)
+    transition_rows: dict[tuple[int, Hashable], tuple[_RegularTransition, ...]] = field(
+        default_factory=_TransitionRows
+    )
     acceptor_symbol_transitions: dict[
         Hashable,
         dict[Symbol, tuple[Hashable, float] | object],
@@ -1026,16 +1161,49 @@ class _RegularBackwardCache:
     accepted_transition_total: int = 0
     dense_transition_by_symbol: Mapping[Symbol, tuple[int, ...]] | None = field(default=None, init=False)
     weighted_transitions: bool = field(default=False, init=False)
+    check_zero_underflow: bool = field(default=True, init=False)
 
     def __post_init__(self) -> None:
         dense = getattr(self.acceptor, "dense_transition_by_symbol", None)
         if dense is not None:
             self.dense_transition_by_symbol = dense
         self.weighted_transitions = has_custom_transition_weights(self.acceptor)
+        self.check_zero_underflow = (
+            self.weighted_transitions
+            or not isinstance(self.graph, FixedOrderContextGraph)
+            or any(0 < edge.probability < 1e-200 for edges in self.graph.outgoing for edge in edges)
+        )
+
+    def log_beta(self, time: int, state: int, acceptor_state: Hashable) -> float:
+        def terminal(key):
+            t, _state, q = key
+            self.beta_cache_misses += 1
+            if t == self.length:
+                return 0.0 if self.acceptor.is_accepting(q) else NEG_INF
+            return None
+
+        def successors(key):
+            t, source, q = key
+            for edge, next_q, weight in self.accepted_transitions(source, q):
+                if edge.probability > 0 and weight > 0 and self._symbol_allowed(t, edge.symbol):
+                    self.expanded_edge_total += 1
+                    yield (t + 1, edge.dst, next_q), log_mass(edge.probability) + log_mass(weight)
+
+        key = (time, state, acceptor_state)
+        if key in self.log_memo:
+            self.beta_cache_hits += 1
+        return log_backward(key, self.log_memo, terminal, successors)
 
     def beta(self, time: int, state: int, acceptor_state: Hashable) -> float:
+        # Short, ordinary workloads retain their fast arithmetic. Long horizons
+        # use the iterative stable evaluator without changing recursion limits.
+        if self.length >= 256 or self.log_memo:
+            return mass_from_log(self.log_beta(time, state, acceptor_state))
         if self.padded_melody_spec is not None:
-            return self._padded_melody_beta(time, state, acceptor_state)
+            value = self._padded_melody_beta(time, state, acceptor_state)
+            if self.log_memo or (0 < value < 1e-200) or not math.isfinite(value):
+                return mass_from_log(self.log_beta(time, state, acceptor_state))
+            return value
 
         key = (time, state, acceptor_state)
         cached = self.memo.get(key)
@@ -1112,6 +1280,24 @@ class _RegularBackwardCache:
         self.beta_cache_hits += beta_cache_hits
         self.expanded_edge_total += edge_count
         self.memo[key] = total
+        if (
+            self.log_memo
+            or total > 1e200
+            or (total and total < 1e-200)
+            or total != total
+            or (
+                self.check_zero_underflow
+                and total == 0
+                and any(
+                    edge.probability > 0
+                    and weight > 0
+                    and memo_get((next_time, edge.dst, q), 0.0) > 0
+                    and self._symbol_allowed(time, edge.symbol)
+                    for edge, q, weight in row
+                )
+            )
+        ):
+            return mass_from_log(self.log_beta(time, state, acceptor_state))
         return total
 
     def accepted_transitions(
@@ -1243,6 +1429,13 @@ class _RegularBackwardCache:
             if next_state < 0:
                 return None
             return next_state
+        cached = self.acceptor_symbol_transitions.get(acceptor_state, {}).get(
+            symbol, _TRANSITION_CACHE_MISSING
+        )
+        if cached is _TRANSITION_REJECTED:
+            return None
+        if cached is not _TRANSITION_CACHE_MISSING:
+            return cached[0]
         return self.acceptor.next_state(acceptor_state, symbol)
 
     def _padded_melody_beta(
@@ -1828,7 +2021,7 @@ class _RegularBackwardCache:
         current_acceptor_state = acceptor_state
         mass = 1.0
         while current_time < self.length:
-            if not self._padded_melody_symbol_allowed(current_time, spec.pad_symbol):
+            if not self._symbol_allowed(current_time, spec.pad_symbol):
                 return 0.0
             transition = self._padded_melody_pad_transition(
                 current_state,
@@ -1865,7 +2058,7 @@ class _RegularBackwardCache:
             return edge, next_acceptor_state
         return None
 
-    def _padded_melody_symbol_allowed(self, time: int, symbol: Symbol) -> bool:
+    def _symbol_allowed(self, time: int, symbol: Symbol) -> bool:
         if _is_forbidden(
             symbol,
             self.forbidden_symbols,
@@ -1881,11 +2074,16 @@ class _RegularBackwardCache:
 
     @property
     def time_indexed_product_state_count(self) -> int:
-        return len(self.memo)
+        return len(self.memo.keys() | self.log_memo.keys()) if self.log_memo else len(self.memo)
 
     @property
     def unique_product_state_count(self) -> int:
-        return len({(state, acceptor_state) for _time, state, acceptor_state in self.memo})
+        return len(
+            {
+                (state, acceptor_state)
+                for _time, state, acceptor_state in self.memo.keys() | self.log_memo.keys()
+            }
+        )
 
     @property
     def product_edge_count(self) -> int:
@@ -1935,6 +2133,8 @@ class RegularOrderStackBPResult:
         init=False,
         repr=False,
     )
+
+    _first_candidate_cache: dict = field(default_factory=dict, init=False, repr=False)
 
     @property
     def context_state_count(self) -> int:
@@ -2023,6 +2223,8 @@ class RegularOrderStackBPResult:
 
     @property
     def success_mass(self) -> float:
+        if self.length == 0:
+            return float(self.acceptor.is_accepting(self.start_acceptor_state))
         return 1.0 if self._candidate_sets(0, self.prefix, self.start_acceptor_state) else 0.0
 
     def start_order_masses(self) -> tuple[tuple[int, float], ...]:
@@ -2037,6 +2239,23 @@ class RegularOrderStackBPResult:
                 else 0.0
             )
             masses.append((order, mass))
+        return tuple(masses)
+
+    def start_log_order_masses(self) -> tuple[tuple[int, float], ...]:
+        masses = []
+        for order in range(1, min(self.model.max_order, len(self.prefix)) + 1):
+            state = self.graphs[order].state_id(self.prefix[-order:])
+            cache = self.backwards[order]
+            if state is None:
+                value = NEG_INF
+            else:
+                raw = cache.beta(0, state, self.start_acceptor_state)
+                value = (
+                    cache.log_beta(0, state, self.start_acceptor_state)
+                    if cache.log_memo
+                    else log_mass(raw)
+                )
+            masses.append((order, value))
         return tuple(masses)
 
     def sample_with_trace(
@@ -2070,38 +2289,49 @@ class RegularOrderStackBPResult:
             raise RuntimeError("order-stack policy ended in a non-accepting DFA state")
         return tuple(output), tuple(trace)
 
-    def sample_with_orders(
-        self,
-        *,
-        rng: random.Random | int | None = None,
-    ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
+    def _sample_plain(self, rng, include_orders):
         generator = _coerce_rng(rng)
-        history = list(self.prefix)
-        output: list[Symbol] = []
-        orders: list[int] = []
+        history = list(self.prefix[-self.model.max_order :])
+        output = []
+        orders = [] if include_orders else None
+        longest = type(self.policy) is LongestFeasiblePolicy
         acceptor_state = self.start_acceptor_state
-
         for position in range(self.length):
-            candidate_sets = self._candidate_sets(position, history, acceptor_state)
-            choice = self.policy.choose(candidate_sets, generator)
-            if choice is None:
-                raise ValueError("No order has positive constrained future mass.")
-            edge = choice.edge
-            cache = self.backwards[choice.candidate_set.order]
-            next_acceptor_state = cache.next_acceptor_state(acceptor_state, edge.symbol)
-            if next_acceptor_state is None:
-                raise RuntimeError("selected edge is not accepted by the DFA")
+            candidate_sets = self._candidate_sets(
+                position, history, acceptor_state, first_only=longest
+            )
+            if longest:
+                if not candidate_sets:
+                    raise ValueError("No order has positive constrained future mass.")
+                candidate = candidate_sets[0]
+                edge = _sample_from_weighted_edges(
+                    candidate.edges, candidate.weights, candidate.cumulative_weights, generator
+                )
+            else:
+                choice = self.policy.choose(candidate_sets, generator)
+                if choice is None:
+                    raise ValueError("No order has positive constrained future mass.")
+                candidate, edge = choice.candidate_set, choice.edge
             output.append(edge.symbol)
-            orders.append(edge.order)
+            if orders is not None:
+                orders.append(edge.order)
             history.append(edge.symbol)
-            acceptor_state = next_acceptor_state
-
+            acceptor_state = self.backwards[candidate.order].next_acceptor_state(
+                acceptor_state, edge.symbol
+            )
+            if acceptor_state is None:
+                raise RuntimeError("selected edge is not accepted by the DFA")
         if not self.acceptor.is_accepting(acceptor_state):
             raise RuntimeError("order-stack policy ended in a non-accepting DFA state")
-        return tuple(output), tuple(orders)
+        return (tuple(output), tuple(orders)) if orders is not None else tuple(output)
+
+    def sample_with_orders(
+        self, *, rng: random.Random | int | None = None
+    ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
+        return self._sample_plain(rng, True)
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
-        return self.sample_with_orders(rng=rng)[0]
+        return self._sample_plain(rng, False)
 
     def sample_many_with_orders(
         self,
@@ -2117,12 +2347,15 @@ class RegularOrderStackBPResult:
         position: int,
         history: Sequence[Symbol],
         acceptor_state: Hashable,
-    ) -> list[OrderCandidateSet]:
+        *,
+        first_only: bool = False,
+    ) -> Sequence[OrderCandidateSet]:
         history_key = tuple(history[-self.model.max_order :])
         cache_key = (position, history_key, acceptor_state)
-        cached = self._candidate_set_cache.get(cache_key)
+        candidate_cache = self._first_candidate_cache if first_only else self._candidate_set_cache
+        cached = candidate_cache.get(cache_key)
         if cached is not None:
-            return list(cached)
+            return cached if first_only else list(cached)
 
         candidate_sets: list[OrderCandidateSet] = []
         max_order = min(self.model.max_order, len(history))
@@ -2193,6 +2426,21 @@ class RegularOrderStackBPResult:
                         continue
                     candidates.append(edge)
                     weights.append(weight)
+            if cache.log_memo:
+                candidates = []
+                logs = []
+                for edge, next_q, transition_weight in row:
+                    if edge.probability <= 0 or not cache._symbol_allowed(position, edge.symbol):
+                        continue
+                    value = (
+                        log_mass(edge.probability)
+                        + log_mass(transition_weight)
+                        + cache.log_beta(position + 1, edge.dst, next_q)
+                    )
+                    if value != NEG_INF:
+                        candidates.append(edge)
+                        logs.append(value)
+                weights = list(relative_weights(logs))
             if candidates:
                 candidate_sets.append(
                     OrderCandidateSet(
@@ -2203,7 +2451,9 @@ class RegularOrderStackBPResult:
                         weights=tuple(weights),
                     )
                 )
-        self._candidate_set_cache[cache_key] = tuple(candidate_sets)
+                if first_only:
+                    break
+        candidate_cache[cache_key] = tuple(candidate_sets)
         return candidate_sets
 
 
@@ -2299,6 +2549,7 @@ def _regular_plan_from_graphs(
     allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]],
 ) -> RegularOrderStackBPPlan:
     padded_melody_spec = _padded_melody_constraint_spec(acceptor, graphs)
+    symbol_transitions: dict = {}
     backwards = {
         order: _RegularBackwardCache(
             graph,
@@ -2308,6 +2559,7 @@ def _regular_plan_from_graphs(
             forbidden_symbols=model.forbidden_symbols,
             allowed_forbidden_symbols=allowed_forbidden_symbols,
             padded_melody_spec=padded_melody_spec,
+            acceptor_symbol_transitions=symbol_transitions,
         )
         for order, graph in graphs.items()
     }
@@ -2403,6 +2655,7 @@ def prepare_order_stack_masked_dfa_bp(
         minimize_source_graphs=minimize_source_graphs,
     )
     padded_melody_spec = _padded_melody_constraint_spec(acceptor, graphs)
+    symbol_transitions: dict = {}
     backwards = {
         order: _RegularBackwardCache(
             graph,
@@ -2412,6 +2665,7 @@ def prepare_order_stack_masked_dfa_bp(
             forbidden_symbols=model.forbidden_symbols,
             allowed_forbidden_symbols=allowed_forbidden,
             padded_melody_spec=padded_melody_spec,
+            acceptor_symbol_transitions=symbol_transitions,
         )
         for order, graph in graphs.items()
     }
@@ -2549,7 +2803,7 @@ def _padded_melody_constraint_spec(
         )
     )
 
-    return _PaddedMelodyConstraintSpec(
+    spec = _PaddedMelodyConstraintSpec(
         component_acceptors=components,
         duration_index=duration_index,
         final_note_index=final_note_index,
@@ -2562,6 +2816,71 @@ def _padded_melody_constraint_spec(
         additive_duration=additive_duration,
         cost_note_options=cost_note_options,
     )
+    return spec if _validate_padded_melody_spec(spec, symbols) else None
+
+
+def _validate_padded_melody_spec(
+    spec: _PaddedMelodyConstraintSpec,
+    symbols: Sequence[Symbol],
+) -> bool:
+    """Names are hints only: verify every transition the kernel replaces.
+
+    Validation is finite and includes accepting and padding semantics. A
+    non-additive duration DFA can still use the kernel's generic transition
+    branch, provided all durations increase and all component semantics match.
+    """
+    duration = spec.component_acceptors[spec.duration_index]
+    try:
+        for total in range(spec.target + 1):
+            for ended in (False, True):
+                state = (total, ended)
+                if duration.is_accepting(state) != (total == spec.target):
+                    return False
+                for symbol in symbols:
+                    actual = duration.next_state(state, symbol)
+                    if symbol == spec.pad_symbol:
+                        expected = (total, True) if total == spec.target else None
+                        if actual != expected:
+                            return False
+                    elif ended or total == spec.target:
+                        if actual is not None:
+                            return False
+                    elif actual is not None:
+                        if (
+                            symbol not in spec.symbol_costs
+                            or not isinstance(actual, tuple)
+                            or len(actual) != 2
+                            or not isinstance(actual[0], int)
+                            or not total < actual[0] <= spec.target
+                            or actual[1] is not False
+                        ):
+                            return False
+        for index, limit in ((spec.final_note_index, 1), (spec.min_note_index, spec.min_notes)):
+            if index is None:
+                continue
+            component = spec.component_acceptors[index]
+            is_final = index == spec.final_note_index
+            for count in range(limit + 1):
+                value = bool(count) if is_final else count
+                for ended in (False, True):
+                    state = (value, ended)
+                    if component.is_accepting(state) != (count == limit):
+                        return False
+                    for symbol in symbols:
+                        if ended and symbol != spec.pad_symbol:
+                            expected = None
+                        elif symbol == spec.pad_symbol:
+                            expected = (value, True)
+                        elif symbol not in spec.symbol_is_note:
+                            return False
+                        else:
+                            note = spec.symbol_is_note[symbol]
+                            expected = (note if is_final else min(limit, count + int(note)), False)
+                        if component.next_state(state, symbol) != expected:
+                            return False
+    except (TypeError, ValueError, KeyError, IndexError):
+        return False
+    return True
 
 
 def padded_melody_duration_view_quotient_diagnostics(
@@ -2672,12 +2991,15 @@ def _padded_melody_duration_view_category(
 
 
 def _graph_edge_symbols(graphs: Mapping[int, FixedOrderContextGraph]) -> tuple[Symbol, ...]:
-    symbols = {
-        edge.symbol
-        for graph in graphs.values()
-        for edges in graph.outgoing
-        for edge in edges
-    }
+    symbols: set[Symbol] = set()
+    for graph in graphs.values():
+        # A lazy graph's currently materialized rows are only part of its
+        # alphabet. Validating a specialization against that subset is unsafe.
+        model = getattr(graph, "model", None)
+        if model is not None:
+            symbols.update(model.alphabet)
+        else:
+            symbols.update(edge.symbol for edges in graph.outgoing for edge in edges)
     return tuple(symbols)
 
 
@@ -2776,14 +3098,11 @@ def _padded_melody_has_additive_duration(
     target: int,
     pad_symbol: Symbol,
 ) -> bool:
-    representative_by_cost: dict[int, Symbol] = {}
-    for symbol, cost in symbol_costs.items():
-        if symbol == pad_symbol or cost <= 0:
-            continue
-        representative_by_cost.setdefault(cost, symbol)
     for total in range(target + 1):
         state = (total, False)
-        for cost, symbol in representative_by_cost.items():
+        for symbol, cost in symbol_costs.items():
+            if symbol == pad_symbol or cost <= 0:
+                continue
             expected = (total + cost, False) if total + cost <= target else None
             try:
                 next_state = duration_acceptor.next_state(state, symbol)
@@ -2966,6 +3285,7 @@ def _run_order_stack_regular_bp(
         graphs = compile_graphs(prefix=prefix, length=length)
     if minimize_source_graphs and compile_graphs is not None:
         graphs = minimize_fixed_order_graphs(graphs)
+    symbol_transitions: dict = {}
     backwards = {
         order: _RegularBackwardCache(
             graph,
@@ -2974,6 +3294,7 @@ def _run_order_stack_regular_bp(
             constraints=position_constraints,
             forbidden_symbols=model.forbidden_symbols,
             allowed_forbidden_symbols=allowed_forbidden,
+            acceptor_symbol_transitions=symbol_transitions,
         )
         for order, graph in graphs.items()
     }

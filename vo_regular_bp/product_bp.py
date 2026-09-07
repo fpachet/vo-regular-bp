@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import random
+import math
 from typing import Hashable, Iterable, Sequence
 
 from .acceptors import DFA, transition_weight as regular_transition_weight
 from .context import Context, ContextGraph, Symbol, _as_context
+
+from ._numerics import NEG_INF, log_mass, log_sum, mass_from_log, relative_weights
 
 ProductState = tuple[Context, Hashable]
 
@@ -35,6 +38,14 @@ class ProductBPResult:
         init=False,
         repr=False,
     )
+
+    _log_betas: list[dict[ProductState, float]] | None = field(default=None, repr=False)
+
+    @property
+    def log_partition_function(self) -> float:
+        if self._log_betas is not None:
+            return self._log_betas[0].get(self.start_state, NEG_INF)
+        return log_mass(self.partition_function)
 
     @property
     def partition_function(self) -> float:
@@ -65,6 +76,19 @@ class ProductBPResult:
         if cache_key in self._transition_weight_cache:
             return self._transition_weight_cache[cache_key]
 
+        if self._log_betas is not None:
+            edges = self.edges[time].get(state, ())
+            logs = tuple(
+                log_mass(edge.probability)
+                + log_mass(edge.transition_weight)
+                + self._log_betas[time + 1].get(edge.next_state, NEG_INF)
+                for edge in edges
+            )
+            result = tuple(
+                (edge, weight) for edge, weight in zip(edges, relative_weights(logs)) if weight > 0
+            )
+            self._transition_weight_cache[cache_key] = result
+            return result
         beta_next = self.betas[time + 1]
         weighted = []
         for edge in self.edges[time].get(state, ()):
@@ -97,7 +121,7 @@ class ProductBPResult:
         """Draw one exact sample from the constrained distribution."""
 
         generator = _coerce_rng(rng)
-        if self.partition_function <= 0.0:
+        if self.log_partition_function == NEG_INF:
             raise ValueError("cannot sample because the constrained partition function is zero")
 
         state = self.start_state
@@ -125,7 +149,7 @@ class ProductBPResult:
         """
 
         generator = _coerce_rng(rng)
-        if self.partition_function <= 0.0:
+        if self.log_partition_function == NEG_INF:
             raise ValueError("cannot sample because the constrained partition function is zero")
 
         state = self.start_state
@@ -152,8 +176,11 @@ class ProductBPResult:
 
         if len(sequence) != self.length:
             raise ValueError("sequence length must match the BP horizon")
-        if self.partition_function <= 0.0:
+        if self.log_partition_function == NEG_INF:
             return 0.0
+
+        if self._log_betas is not None:
+            return mass_from_log(self.log_conditional_probability(sequence))
 
         state = self.start_state
         probability = 1.0
@@ -182,6 +209,23 @@ class ProductBPResult:
             state = edge.next_state
         return probability
 
+    def log_conditional_probability(self, sequence: Sequence[Symbol]) -> float:
+        if len(sequence) != self.length:
+            raise ValueError("sequence length must match the BP horizon")
+        if self.log_partition_function == NEG_INF:
+            return NEG_INF
+        state = self.start_state
+        log_probability = 0.0
+        for time, symbol in enumerate(sequence):
+            edge = next((e for e in self.edges[time].get(state, ()) if e.symbol == symbol), None)
+            if edge is None or edge.probability <= 0 or edge.transition_weight <= 0:
+                return NEG_INF
+            log_probability += log_mass(edge.probability) + log_mass(edge.transition_weight)
+            state = edge.next_state
+        if not self.acceptor.is_accepting(state[1]):
+            return NEG_INF
+        return min(0.0, log_probability - self.log_partition_function)
+
 
 def run_bp(
     graph: ContextGraph,
@@ -203,32 +247,37 @@ def run_bp(
     layers: list[set[ProductState]] = [set([start])]
     edges_by_time: list[dict[ProductState, tuple[ProductEdge, ...]]] = []
 
+    transition_rows: dict[ProductState, tuple[ProductEdge, ...]] = {}
     for _time in range(length):
         current_layer = layers[-1]
         next_layer: set[ProductState] = set()
         current_edges: dict[ProductState, tuple[ProductEdge, ...]] = {}
 
         for context_state, acceptor_state in current_layer:
-            product_edges = []
-            for edge in graph.outgoing(context_state):
-                next_acceptor_state = acceptor.next_state(acceptor_state, edge.symbol)
-                if next_acceptor_state is None:
-                    continue
-                dfa_weight = regular_transition_weight(acceptor, acceptor_state, edge.symbol)
-                if dfa_weight <= 0.0:
-                    continue
-                next_product_state = (edge.next_state, next_acceptor_state)
-                product_edges.append(
-                    ProductEdge(
-                        symbol=edge.symbol,
-                        probability=edge.probability,
-                        transition_weight=dfa_weight,
-                        next_state=next_product_state,
-                        order_weights=edge.order_weights or ((len(context_state), 1.0),),
+            state = (context_state, acceptor_state)
+            if state not in transition_rows:
+                product_edges = []
+                for edge in graph.outgoing(context_state):
+                    next_acceptor_state = acceptor.next_state(acceptor_state, edge.symbol)
+                    if next_acceptor_state is None:
+                        continue
+                    dfa_weight = regular_transition_weight(acceptor, acceptor_state, edge.symbol)
+                    if dfa_weight <= 0.0:
+                        continue
+                    next_product_state = (edge.next_state, next_acceptor_state)
+                    product_edges.append(
+                        ProductEdge(
+                            symbol=edge.symbol,
+                            probability=edge.probability,
+                            transition_weight=dfa_weight,
+                            next_state=next_product_state,
+                            order_weights=edge.order_weights or ((len(context_state), 1.0),),
+                        )
                     )
-                )
-                next_layer.add(next_product_state)
-            current_edges[(context_state, acceptor_state)] = tuple(product_edges)
+                transition_rows[state] = tuple(product_edges)
+            row = transition_rows[state]
+            current_edges[state] = row
+            next_layer.update(edge.next_state for edge in row)
 
         edges_by_time.append(current_edges)
         layers.append(next_layer)
@@ -239,6 +288,7 @@ def run_bp(
         for state in layers[length]
     }
 
+    needs_log = False
     for time in range(length - 1, -1, -1):
         beta_next = betas[time + 1]
         beta_now: dict[ProductState, float] = {}
@@ -250,6 +300,37 @@ def run_bp(
                 for edge in edges_by_time[time].get(state, ())
             )
         betas[time] = beta_now
+        if any(
+            not math.isfinite(value) or 0 < value < 1e-200 or value > 1e200
+            for value in beta_now.values()
+        ):
+            needs_log = True
+        if not needs_log:
+            needs_log = any(
+                edge.probability > 0
+                and edge.transition_weight > 0
+                and beta_next.get(edge.next_state, 0) > 0
+                and edge.probability * edge.transition_weight * beta_next[edge.next_state] == 0
+                for state, value in beta_now.items()
+                if value == 0
+                for edge in edges_by_time[time].get(state, ())
+            )
+
+    log_betas = None
+    if needs_log:
+        log_betas = [{} for _ in range(length + 1)]
+        log_betas[length] = {state: log_mass(value) for state, value in betas[length].items()}
+        for time in range(length - 1, -1, -1):
+            log_betas[time] = {
+                state: log_sum(
+                    log_mass(edge.probability)
+                    + log_mass(edge.transition_weight)
+                    + log_betas[time + 1].get(edge.next_state, NEG_INF)
+                    for edge in edges_by_time[time].get(state, ())
+                )
+                for state in layers[time]
+            }
+            betas[time] = {state: mass_from_log(value) for state, value in log_betas[time].items()}
 
     return ProductBPResult(
         graph=graph,
@@ -259,6 +340,7 @@ def run_bp(
         layers=layers,
         edges=edges_by_time,
         betas=betas,
+        _log_betas=log_betas,
     )
 
 

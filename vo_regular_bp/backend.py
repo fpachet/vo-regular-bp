@@ -9,9 +9,10 @@ surface.
 from __future__ import annotations
 
 import bisect
-from collections.abc import Callable, Hashable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Sequence, Mapping
 from dataclasses import dataclass
 import random
+import math
 
 from .acceptors import DFA
 from .constraint_builders import combine_constraints
@@ -31,6 +32,47 @@ from .order_stack_bp import (
     run_order_stack_masked_dfa_bp,
 )
 from .positional_bp import AllowedForbiddenSymbols
+from ._numerics import NEG_INF, log_sum, relative_weights
+
+
+class _BackwardSlice(Sequence):
+    """Constant-space suffix view of shared first-hit backward rows."""
+
+    def __init__(self, rows, offset):
+        self.rows = rows
+        self.offset = offset
+        logs = getattr(rows, "log_values", None)
+        self.log_values = None if logs is None else _BackwardSlice(logs, offset)
+
+    def __len__(self):
+        return len(self.rows) - self.offset
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self.rows[self.offset + index]
+
+
+class _FirstHitMasks(Mapping):
+    def __init__(self, length, stop_symbols, other_symbols):
+        self.length = length
+        self.stop_symbols = stop_symbols
+        self.other_symbols = other_symbols
+
+    def __len__(self):
+        return self.length
+
+    def __iter__(self):
+        return iter(range(self.length))
+
+    def __getitem__(self, position):
+        if not 0 <= position < self.length:
+            raise KeyError(position)
+        return self.stop_symbols if position == self.length - 1 else self.other_symbols
 
 
 @dataclass(frozen=True)
@@ -86,6 +128,9 @@ class BackendDiagnostics:
     virtual_outgoing_row_cache_misses: int | None = None
     success_mass: float | None = None
     start_order_masses: tuple[tuple[int, float], ...] = ()
+    start_log_order_masses: tuple[tuple[int, float], ...] = ()
+    regular_transition_cache_entries: int | None = None
+    regular_transition_cache_skipped_rows: int | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -112,32 +157,20 @@ class BackendDiagnostics:
             ),
             "duration_view_quotient_states": self.duration_view_quotient_states,
             "duration_view_quotient_classes": self.duration_view_quotient_classes,
-            "duration_view_quotient_state_reduction": (
-                self.duration_view_quotient_state_reduction
-            ),
+            "duration_view_quotient_state_reduction": (self.duration_view_quotient_state_reduction),
             "duration_view_quotient_edges": self.duration_view_quotient_edges,
-            "duration_view_quotient_projected_edges": (
-                self.duration_view_quotient_projected_edges
-            ),
-            "duration_view_quotient_ignored_edges": (
-                self.duration_view_quotient_ignored_edges
-            ),
-            "duration_view_quotient_quotient_edges": (
-                self.duration_view_quotient_quotient_edges
-            ),
+            "duration_view_quotient_projected_edges": (self.duration_view_quotient_projected_edges),
+            "duration_view_quotient_ignored_edges": (self.duration_view_quotient_ignored_edges),
+            "duration_view_quotient_quotient_edges": (self.duration_view_quotient_quotient_edges),
             "duration_view_quotient_projected_edge_reduction": (
                 self.duration_view_quotient_projected_edge_reduction
             ),
-            "duration_view_quotient_max_class_size": (
-                self.duration_view_quotient_max_class_size
-            ),
+            "duration_view_quotient_max_class_size": (self.duration_view_quotient_max_class_size),
             "duration_view_quotient_refinement_rounds": (
                 self.duration_view_quotient_refinement_rounds
             ),
             "duration_view_quotient_seconds": self.duration_view_quotient_seconds,
-            "duration_view_quotient_order_stats": (
-                self.duration_view_quotient_order_stats
-            ),
+            "duration_view_quotient_order_stats": (self.duration_view_quotient_order_stats),
             "virtual_context_materialization_seconds": (
                 self.virtual_context_materialization_seconds
             ),
@@ -156,6 +189,9 @@ class BackendDiagnostics:
             "virtual_outgoing_row_cache_misses": self.virtual_outgoing_row_cache_misses,
             "success_mass": self.success_mass,
             "start_order_masses": self.start_order_masses,
+            "start_log_order_masses": self.start_log_order_masses,
+            "regular_transition_cache_entries": self.regular_transition_cache_entries,
+            "regular_transition_cache_skipped_rows": self.regular_transition_cache_skipped_rows,
         }
 
 
@@ -274,21 +310,15 @@ class ConstrainedOrderStackBackend:
             regular_beta_state_expansions=(
                 self.result.regular_beta_state_expansions if is_regular else None
             ),
-            regular_beta_cache_hits=(
-                self.result.regular_beta_cache_hits if is_regular else None
-            ),
+            regular_beta_cache_hits=(self.result.regular_beta_cache_hits if is_regular else None),
             regular_beta_cache_misses=(
                 self.result.regular_beta_cache_misses if is_regular else None
             ),
             regular_acceptor_symbol_transition_cache_hits=(
-                self.result.regular_acceptor_symbol_transition_cache_hits
-                if is_regular
-                else None
+                self.result.regular_acceptor_symbol_transition_cache_hits if is_regular else None
             ),
             regular_acceptor_symbol_transition_cache_misses=(
-                self.result.regular_acceptor_symbol_transition_cache_misses
-                if is_regular
-                else None
+                self.result.regular_acceptor_symbol_transition_cache_misses if is_regular else None
             ),
             duration_view_quotient_states=(
                 duration_view.states if duration_view is not None else None
@@ -312,9 +342,7 @@ class ConstrainedOrderStackBackend:
                 duration_view.quotient_edges if duration_view is not None else None
             ),
             duration_view_quotient_projected_edge_reduction=(
-                duration_view.projected_edge_reduction
-                if duration_view is not None
-                else None
+                duration_view.projected_edge_reduction if duration_view is not None else None
             ),
             duration_view_quotient_max_class_size=(
                 duration_view.max_class_size if duration_view is not None else None
@@ -326,10 +354,7 @@ class ConstrainedOrderStackBackend:
                 duration_view.seconds if duration_view is not None else None
             ),
             duration_view_quotient_order_stats=(
-                tuple(
-                    stats.as_dict()
-                    for stats in duration_view.orders
-                )
+                tuple(stats.as_dict() for stats in duration_view.orders)
                 if duration_view is not None
                 else ()
             ),
@@ -350,9 +375,7 @@ class ConstrainedOrderStackBackend:
             augmented_count_cache_misses=virtual_diagnostics.get(
                 "augmented_count_cache_misses",
             ),
-            virtual_outgoing_row_calls=virtual_outgoing_diagnostics[
-                "virtual_outgoing_row_calls"
-            ],
+            virtual_outgoing_row_calls=virtual_outgoing_diagnostics["virtual_outgoing_row_calls"],
             virtual_outgoing_row_cache_hits=virtual_outgoing_diagnostics[
                 "virtual_outgoing_row_cache_hits"
             ],
@@ -361,6 +384,17 @@ class ConstrainedOrderStackBackend:
             ],
             success_mass=self.result.success_mass,
             start_order_masses=self.result.start_order_masses(),
+            start_log_order_masses=self.result.start_log_order_masses(),
+            regular_transition_cache_entries=(
+                sum(cache.transition_rows.entries for cache in self.result.backwards.values())
+                if is_regular
+                else None
+            ),
+            regular_transition_cache_skipped_rows=(
+                sum(cache.transition_rows.skipped_rows for cache in self.result.backwards.values())
+                if is_regular
+                else None
+            ),
         )
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
@@ -372,10 +406,8 @@ class ConstrainedOrderStackBackend:
         *,
         rng: random.Random | int | None = None,
     ) -> list[tuple[Symbol, ...]]:
-        return [
-            sequence
-            for sequence, _orders in self.result.sample_many_with_orders(count, rng=rng)
-        ]
+        generator = _coerce_backend_rng(rng)
+        return [self.result.sample(rng=generator) for _ in range(count)]
 
     def sample_with_orders(self, *, rng: random.Random | int | None = None) -> GeneratedSequence:
         sequence, orders = self.result.sample_with_orders(rng=rng)
@@ -850,8 +882,45 @@ def prepare_until_order_stack(
     )
     prepared: list[ConstrainedOrderStackBackend] = []
     weights: list[float] = []
+    log_weights: list[float] = []
+    shared = None
+    if constraints is None:
+        # With first-hit masks only, shorter horizons are suffix views of the
+        # longest table: r=1 emits STOP, r>1 emits a non-STOP symbol.
+        stops = frozenset(s for s in model.alphabet if stop_predicate(s))
+        others = model.alphabet - stops
+        shared = prepare_order_stack_bp(
+            model,
+            length=max_length,
+            constraints=_FirstHitMasks(max_length, stops, others),
+            allowed_forbidden_symbols={max_length - 1: model.forbidden_symbols & stops},
+            policy=policy,
+            minimize_source_graphs=minimize_source_graphs,
+        )
 
     for length in range(min_length, max_length + 1):
+        if shared is not None:
+            backend = ConstrainedOrderStackBackend(
+                OrderStackBPResult(
+                    model=model,
+                    length=length,
+                    prefix=tuple(prefix),
+                    constraints=_FirstHitMasks(length, stops, others),
+                    allowed_forbidden_symbols={length - 1: model.forbidden_symbols & stops},
+                    graphs=shared.graphs,
+                    backwards={
+                        order: _BackwardSlice(rows, max_length - length)
+                        for order, rows in shared.backwards.items()
+                    },
+                    policy=shared.policy,
+                )
+            )
+            log_weight = log_sum(value for _, value in backend.result.start_log_order_masses())
+            if log_weight != NEG_INF:
+                prepared.append(backend)
+                weights.append(_length_weight(backend))
+                log_weights.append(log_weight)
+            continue
         if not _constraints_compatible_with_length(constraints, length):
             continue
         first_hit = _first_hit_constraints(stop_predicate, length)
@@ -874,13 +943,18 @@ def prepare_until_order_stack(
             minimize_source_graphs=minimize_source_graphs,
         )
         weight = _length_weight(backend)
-        if weight <= 0.0:
+        log_weight = log_sum(value for _, value in backend.result.start_log_order_masses())
+        if log_weight == NEG_INF:
             continue
         prepared.append(backend)
         weights.append(weight)
+        log_weights.append(log_weight)
 
     if not prepared:
         raise ValueError("No feasible first-hit continuation length satisfies the constraints.")
+
+    if any(weight == 0 or not math.isfinite(weight) for weight in weights):
+        weights = list(relative_weights(log_weights))
 
     return UntilOrderStackBackend(
         backends=tuple(prepared),
@@ -1046,9 +1120,7 @@ def _length_weight(backend: ConstrainedOrderStackBackend) -> float:
         max(0.0, float(start_mass))
         for _order, start_mass in backend.result.start_order_masses()
     )
-    if mass > 0.0:
-        return mass
-    return 1.0 if backend.result.success_mass > 0.0 else 0.0
+    return mass
 
 
 def _coerce_backend_rng(rng: random.Random | int | None) -> random.Random:

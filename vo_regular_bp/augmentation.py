@@ -7,7 +7,7 @@ training sequences had been materialized.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 import time
@@ -112,13 +112,8 @@ class VirtualAugmentedOrderStackModel:
     )
     _graph_cache: dict[int, FixedOrderContextGraph] = field(default_factory=dict, init=False)
     _contexts_cache: dict[int, tuple[Context, ...]] = field(default_factory=dict, init=False)
-    _lazy_graph_cache: dict[tuple[Context, int], dict[int, "LazyVirtualFixedOrderContextGraph"]] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
-    _lazy_plan_graph_cache: dict[int, dict[int, "LazyVirtualFixedOrderContextGraph"]] = field(
-        default_factory=dict,
+    _shared_lazy_graphs: dict[int, "LazyVirtualFixedOrderContextGraph"] | None = field(
+        default=None,
         init=False,
         repr=False,
     )
@@ -341,14 +336,9 @@ class VirtualAugmentedOrderStackModel:
     ) -> dict[int, "LazyVirtualFixedOrderContextGraph"]:
         if length < 0:
             raise ValueError("length must be non-negative")
-        cache_key = int(length)
-        cached = self._lazy_plan_graph_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        graphs = self._new_lazy_graphs()
-        self._lazy_plan_graph_cache[cache_key] = graphs
-        return graphs
+        if self._shared_lazy_graphs is None:
+            self._shared_lazy_graphs = self._new_lazy_graphs()
+        return self._shared_lazy_graphs
 
     def compile_graphs_for_prefix(
         self,
@@ -356,17 +346,25 @@ class VirtualAugmentedOrderStackModel:
         prefix: Sequence[Symbol],
         length: int,
     ) -> dict[int, "LazyVirtualFixedOrderContextGraph"]:
-        if length < 0:
-            raise ValueError("length must be non-negative")
-        prefix_context = tuple(prefix)
-        cache_key = (prefix_context, int(length))
-        cached = self._lazy_graph_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        return self.compile_graphs_for_plan(length=length)
 
-        graphs = self._new_lazy_graphs()
-        self._lazy_graph_cache[cache_key] = graphs
-        return graphs
+    def clear_caches(self) -> None:
+        """Release model-owned compiled views without invalidating live plans.
+
+        The training model and transforms must remain immutable. Existing
+        plans retain their own graph references and continue to work.
+        """
+        for cache in (
+            self._counts_cache,
+            self._distribution_cache,
+            self._graph_cache,
+            self._contexts_cache,
+            self._apply_symbol_cache,
+            self._inverse_symbol_cache,
+            self._inverse_context_cache,
+        ):
+            cache.clear()
+        self._shared_lazy_graphs = None
 
     def _new_lazy_graphs(self) -> dict[int, "LazyVirtualFixedOrderContextGraph"]:
         return {
@@ -414,6 +412,7 @@ class LazyVirtualFixedOrderContextGraph:
         self.contexts: list[Context] = []
         self.context_to_id: dict[Context, int] = {}
         self._outgoing_cache: dict[int, list[StackEdge]] = {}
+        self._unreachable_contexts: set[Context] = set()
         self.outgoing = _LazyOutgoing(self)
         self.outgoing_row_calls = 0
         self.outgoing_row_cache_hits = 0
@@ -435,9 +434,43 @@ class LazyVirtualFixedOrderContextGraph:
 
     def state_id(self, context: Iterable[Symbol] | Context) -> int | None:
         state = self.truncate_context(context)
-        if state not in self._ensure_allowed_contexts():
+        found = self.context_to_id.get(state)
+        if found is not None:
+            return found
+        seeds = self._ensure_allowed_contexts()
+        if state in seeds:
+            return self._add_context(state)
+        # Resolve exceptional prefixes by reverse reachability. Most queries
+        # reach a training seed in one step; no full forward graph is built.
+        if state in self._unreachable_contexts:
             return None
-        return self._add_context(state)
+        pending = deque([state])
+        visited = {state}
+        first_symbols = self.model.alphabet | {seed[0] for seed in seeds if seed}
+        while pending:
+            target = pending.popleft()
+            if not target:
+                continue
+            predecessors = [target[:-1]]
+            if len(target) == self.order:
+                predecessors.extend((symbol,) + target[:-1] for symbol in first_symbols)
+            for predecessor in predecessors:
+                if predecessor in visited or predecessor in self._unreachable_contexts:
+                    continue
+                distribution, _ = self.model.continuation_distribution_with_order(
+                    predecessor,
+                    max_order=self.order,
+                )
+                if not any(
+                    symbol == target[-1] and probability > 0 for symbol, probability in distribution
+                ):
+                    continue
+                if predecessor in seeds or predecessor in self.context_to_id:
+                    return self._add_context(state)
+                visited.add(predecessor)
+                pending.append(predecessor)
+        self._unreachable_contexts.update(visited)
+        return None
 
     @property
     def edge_count(self) -> int:
@@ -458,7 +491,6 @@ class LazyVirtualFixedOrderContextGraph:
         )
         edges: list[StackEdge] = []
         order = self.order
-        allowed_contexts = self._ensure_allowed_contexts()
         for symbol, probability in distribution:
             candidate_context = context + (symbol,)
             dst_context = (
@@ -466,8 +498,6 @@ class LazyVirtualFixedOrderContextGraph:
                 if len(candidate_context) <= order
                 else candidate_context[-order:]
             )
-            if dst_context not in allowed_contexts:
-                continue
             dst = self._add_context(dst_context)
             edges.append(
                 StackEdge(

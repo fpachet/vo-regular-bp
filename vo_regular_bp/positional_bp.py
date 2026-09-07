@@ -19,6 +19,7 @@ from typing import Protocol
 
 from .context import Context, ContextGraph, Edge, Symbol, _as_context
 from .product_bp import _sample_order
+from ._numerics import NEG_INF, log_mass, log_sum, mass_from_log, relative_weights
 
 PositionConstraint = Callable[[Symbol], bool] | Iterable[Symbol]
 PositionConstraints = Mapping[int, PositionConstraint]
@@ -195,6 +196,14 @@ class PositionalBPResult:
         repr=False,
     )
 
+    _log_betas: list[dict[Context, float]] | None = field(default=None, repr=False)
+
+    @property
+    def log_partition_function(self) -> float:
+        if self._log_betas is not None:
+            return self._log_betas[0].get(self.start_context, NEG_INF)
+        return log_mass(self.partition_function)
+
     @property
     def partition_function(self) -> float:
         return self.betas[0].get(self.start_context, 0.0)
@@ -220,8 +229,17 @@ class PositionalBPResult:
         if cached is not None:
             return cached
 
-        beta_next = self.betas[time + 1]
         constraint = self.constraints.get(time)
+        if self._log_betas is not None:
+            edges = tuple(e for e in self.model.outgoing(state) if _allows(constraint, e.symbol))
+            logs = tuple(
+                log_mass(e.probability) + self._log_betas[time + 1].get(e.next_state, NEG_INF)
+                for e in edges
+            )
+            result = tuple((e, w) for e, w in zip(edges, relative_weights(logs)) if w > 0)
+            self._transition_weight_cache[cache_key] = result
+            return result
+        beta_next = self.betas[time + 1]
         weighted = []
         for edge in self.model.outgoing(state):
             if not _allows(constraint, edge.symbol):
@@ -249,7 +267,7 @@ class PositionalBPResult:
 
     def sample(self, *, rng: random.Random | int | None = None) -> tuple[Symbol, ...]:
         generator = _coerce_rng(rng)
-        if self.partition_function <= 0.0:
+        if self.log_partition_function == NEG_INF:
             raise ValueError("cannot sample because the constrained partition function is zero")
 
         context = self.start_context
@@ -270,7 +288,7 @@ class PositionalBPResult:
         rng: random.Random | int | None = None,
     ) -> tuple[tuple[Symbol, ...], tuple[int, ...]]:
         generator = _coerce_rng(rng)
-        if self.partition_function <= 0.0:
+        if self.log_partition_function == NEG_INF:
             raise ValueError("cannot sample because the constrained partition function is zero")
 
         context = self.start_context
@@ -286,9 +304,11 @@ class PositionalBPResult:
     def conditional_probability(self, sequence: Sequence[Symbol]) -> float:
         if len(sequence) != self.length:
             raise ValueError("sequence length must match the BP horizon")
-        if self.partition_function <= 0.0:
+        if self.log_partition_function == NEG_INF:
             return 0.0
 
+        if self._log_betas is not None:
+            return mass_from_log(self.log_conditional_probability(sequence))
         context = self.start_context
         probability = 1.0
         for time, symbol in enumerate(sequence):
@@ -307,6 +327,23 @@ class PositionalBPResult:
             probability *= weight / beta_now
             context = edge.next_state
         return probability
+
+    def log_conditional_probability(self, sequence: Sequence[Symbol]) -> float:
+        if len(sequence) != self.length:
+            raise ValueError("sequence length must match the BP horizon")
+        if self.log_partition_function == NEG_INF:
+            return NEG_INF
+        context = self.start_context
+        value = 0.0
+        for time, symbol in enumerate(sequence):
+            if not _allows(self.constraints.get(time), symbol):
+                return NEG_INF
+            edge = next((e for e in self.model.outgoing(context) if e.symbol == symbol), None)
+            if edge is None or edge.probability <= 0:
+                return NEG_INF
+            value += log_mass(edge.probability)
+            context = edge.next_state
+        return min(0.0, value - self.log_partition_function)
 
 
 def run_positional_bp(
@@ -327,34 +364,55 @@ def run_positional_bp(
     betas: list[dict[Context, float]] = [dict() for _ in range(length + 1)]
     allowed_edge_counts: list[dict[Context, int]] = [dict() for _ in range(length)]
 
-    def beta(time_index: int, context: Context) -> float:
-        cached = betas[time_index].get(context)
-        if cached is not None:
-            return cached
-        if time_index == length:
-            betas[time_index][context] = 1.0
-            return 1.0
-
+    layers = [{context0}]
+    for time_index in range(length):
+        next_layer = set()
         constraint = position_constraints.get(time_index)
-        total = 0.0
-        allowed_count = 0
-        for edge in model.outgoing(context):
-            if not _allows(constraint, edge.symbol):
-                continue
-            allowed_count += 1
-            total += edge.probability * beta(time_index + 1, edge.next_state)
-
-        allowed_edge_counts[time_index][context] = allowed_count
-        betas[time_index][context] = total
-        return total
-
-    beta(0, context0)
+        for context in layers[-1]:
+            edges = tuple(e for e in model.outgoing(context) if _allows(constraint, e.symbol))
+            allowed_edge_counts[time_index][context] = len(edges)
+            next_layer.update(e.next_state for e in edges)
+        layers.append(next_layer)
+    betas[length] = {context: 1.0 for context in layers[length]}
+    needs_log = False
+    for time_index in range(length - 1, -1, -1):
+        constraint = position_constraints.get(time_index)
+        for context in layers[time_index]:
+            value = sum(
+                e.probability * betas[time_index + 1].get(e.next_state, 0.0)
+                for e in model.outgoing(context)
+                if _allows(constraint, e.symbol)
+            )
+            betas[time_index][context] = value
+            if 0 < value < 1e-200:
+                needs_log = True
+            elif value == 0 and any(
+                e.probability > 0 and betas[time_index + 1].get(e.next_state, 0) > 0
+                for e in model.outgoing(context)
+                if _allows(constraint, e.symbol)
+            ):
+                needs_log = True
+    log_betas = None
+    if needs_log:
+        log_betas = [{} for _ in range(length + 1)]
+        log_betas[length] = {context: 0.0 for context in layers[length]}
+        for time_index in range(length - 1, -1, -1):
+            constraint = position_constraints.get(time_index)
+            for context in layers[time_index]:
+                value = log_sum(
+                    log_mass(e.probability) + log_betas[time_index + 1].get(e.next_state, NEG_INF)
+                    for e in model.outgoing(context)
+                    if _allows(constraint, e.symbol)
+                )
+                log_betas[time_index][context] = value
+                betas[time_index][context] = mass_from_log(value)
     return PositionalBPResult(
         model=model,
         length=length,
         start_context=context0,
         constraints=position_constraints,
         betas=betas,
+        _log_betas=log_betas,
         allowed_edge_counts=allowed_edge_counts,
     )
 

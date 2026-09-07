@@ -57,6 +57,49 @@ horizon, and constraints.
 For the lower-level exact product-BP engine, use `ContextGraph`, DFA helpers,
 and `run_bp(...)`.
 
+## Cache Lifetime and Numerical Range
+
+Treat a prepared plan's training model, transforms, positional predicates, and
+acceptors as immutable. For changing soft weights, use the support-plan API to
+obtain fresh regular messages. A regular plan shares its DFA-symbol transition
+cache across source orders. Each order retains at most 65,536 transition-cache
+entries (an empty row costs one entry); additional rows are evaluated without
+being retained. Beta messages and sampled candidate sets remain reusable.
+Diagnostics expose `regular_transition_cache_entries` and
+`regular_transition_cache_skipped_rows`; `regular_transition_rows` counts
+currently retained rows, not all rows ever evaluated.
+
+Virtual models now share lazy source graphs across prefixes and horizons, with
+stable context IDs. `virtual_model.clear_caches()` releases model-owned compiled
+views. Existing plans keep their graph references and remain usable; discard
+those plans too when their memory is no longer needed.
+
+`sample()` avoids order-output allocation. For the exact built-in
+`LongestFeasiblePolicy`, non-trace sampling also avoids decision metadata and
+stops evaluating orders at the first feasible one. Custom policies and traces
+retain the full candidate interface. Consequently, requesting a trace for the
+first time can perform work that sequence-only sampling did not need.
+
+Product and positional BP results expose `log_partition_function` and
+`log_conditional_probability(sequence)`. Ordinary float masses may round to
+zero or infinity outside their representable range; use logarithmic values to
+distinguish underflow from an impossible language (`-inf`). Sampling uses stable
+relative weights when message arithmetic approaches those limits. Order-stack
+results expose `start_log_order_masses()`, also available in backend diagnostics.
+Long regular horizons use an iterative log-space evaluator without changing the
+process-wide recursion limit. Short ordinary queries retain the fast recurrence.
+Individual transition weights must still be finite; values already underflowed
+inside a caller's weight function cannot be recovered by BP.
+
+For first-hit generation with `constraints=None`, candidate lengths share suffix
+views of one backward table. Additional constraints use the generic per-length
+backend. The same length-selection policy is preserved. If absolute length
+masses are outside float range, `length_weights` contains proportional rescaled
+weights instead; feasible lengths remain available.
+
+Full lifecycle timings, memory measurements, and limitations are recorded in
+[`reports/implementation_results_2026_09_07.md`](../reports/implementation_results_2026_09_07.md).
+
 ## Constraint Semantics
 
 All high-level constraints are fixed-horizon constraints over the generated
@@ -193,8 +236,12 @@ Conflicting caller constraints simply make that length infeasible. The prepared
 backend exposes `sample(...)`, `sample_with_orders(...)`,
 `sample_with_trace(...)`, `sample_many(...)`, `diagnostics`, and
 `feasible_lengths`. Feasible lengths are weighted by the sum of positive
-start-order masses reported by their fixed-length backend; if a backend can
-only report success, that feasible length receives unit weight.
+start-order masses reported by their fixed-length backend. Logarithmic masses
+preserve feasible lengths when ordinary float masses underflow; `length_weights`
+then contains proportional rescaled weights. With `constraints=None`, the
+per-length backends share one backward table through suffix views. Additional
+constraints, including an explicit empty `ConstraintSet`, use the general
+per-length path.
 
 Learned START/END sentinels remain forbidden in ordinary unconstrained
 fixed-length generation. First-hit generation allows a forbidden stop symbol

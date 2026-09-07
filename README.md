@@ -78,8 +78,20 @@ The library includes several exactness-preserving optimizations: positional
 constraints are kept as time masks instead of DFA product state, MAXORDER /
 forbidden-substring constraints use a dense DFA when possible, order-stack
 sampling caches feasible candidate sets, and non-trace sampling avoids trace
-object allocation. See [`docs/optimization_roadmap.md`](docs/optimization_roadmap.md)
-for measured results, discarded experiments, and future optimization options.
+object allocation. The September 2026 update also bounds regular transition-row
+retention, shares virtual graphs across horizons, speeds up the built-in
+longest-feasible sampling path, and shares first-hit backward tables when
+`constraints=None`. Lazy graph closure and duration specialization are covered
+by new correctness regressions; stable numerical fallbacks support extreme
+masses and long horizons.
+
+Local benchmarks measured 12% less full LSDB preparation time and 40% less
+retained traced memory; repeated warm sampling took 58% less time on smaller
+LSDB and 74% less on Bach. These gains depend on the workload: cold traces can
+take longer, and full LSDB first-sample expansion remains expensive. See the
+[`implementation results`](reports/implementation_results_2026_09_07.md) for
+parameters, raw measurements, and limitations, and the
+[`optimization roadmap`](docs/optimization_roadmap.md) for remaining work.
 
 ## Quick Start
 
@@ -163,6 +175,8 @@ returns a `ProductBPResult` with:
 - `sample(...)` and `sample_many(...)`: exact conditional samples.
 - `conditional_probability(sequence)`: probability under the constrained
   distribution.
+- `log_partition_function` and `log_conditional_probability(sequence)`:
+  logarithmic values for masses outside ordinary floating-point range.
 - product-state and edge-count diagnostics for scalability studies.
 
 `sample_exact(...)` is a convenience wrapper that runs BP and draws one sample.
@@ -252,8 +266,9 @@ the explicit API or make approximate merging automatic.
 
 `run_positional_bp(...)` is a no-DFA specialization for fixed-horizon
 time-indexed symbol masks. It is useful when the only constraints are
-positional, because the recursion ranges over context states rather than full
-context-acceptor products.
+positional, because iterative backward messages range over context states rather
+than full context-acceptor products. Its result also exposes logarithmic
+partition and conditional probabilities.
 
 `LazyBackoffContextModel` matches `ContextGraph.from_backoff_sequences(...)`
 semantically, but materializes outgoing edges only when reached by BP.
@@ -274,7 +289,9 @@ then an order policy such as `LongestFeasiblePolicy` or
 `SingletonAvoidingBackoffPolicy` chooses among feasible candidate orders.
 
 The main result object reports `success_mass`, order-specific start masses,
-samples, and optional order traces.
+`start_log_order_masses()`, samples, and optional order traces. Cache ownership,
+immutability requirements, and numerical limits are described in the
+[usage guide](docs/library_usage.md#cache-lifetime-and-numerical-range).
 
 ### Public Constraint Backend
 
@@ -345,12 +362,14 @@ and later prefixes reuse overlapping cached product states. The old
 this plan path when the model supports prefix-independent graph preparation.
 
 For variable-length Continuator-style suffixes, use
-`prepare_until_order_stack(...)`. It prepares one fixed-length constrained
-backend for each feasible length in `[min_length, max_length]`, samples a
-length by the sum of its positive start-order masses, then samples the suffix
-from that length backend. If only a backend success indicator is available, the
-length receives unit weight. The returned suffix does not include the prefix:
-the prefix is conditioning context only.
+`prepare_until_order_stack(...)`. It exposes a fixed-length backend for each
+feasible length in `[min_length, max_length]`, samples a length by the sum of its
+positive start-order masses, then samples the suffix from that length backend.
+With `constraints=None`, these backends share suffix views of one backward
+table; additional constraints use separate per-length computation. Length
+weights are proportionally rescaled if their absolute masses underflow or
+overflow. The returned suffix does not include the prefix: the prefix is
+conditioning context only.
 
 ```python
 from vo_regular_bp import OrderStackModel, prepare_until_order_stack

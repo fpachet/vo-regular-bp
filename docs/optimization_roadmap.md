@@ -4,6 +4,22 @@ This document collects the optimization ideas discussed for `vo_regular_bp`,
 including completed work, experiments that were rejected, small safe next steps,
 and larger architectural options.
 
+## September 2026 implementation update
+
+The review-driven implementation added bounded transition-row retention,
+cross-order DFA-symbol caching, shared virtual source graphs across horizons,
+sequence-only and longest-feasible sampling paths, shared first-hit backward
+tables, static product-row sharing, and stable numerical/long-horizon fallbacks.
+The candidate-copying and policy-allocation ideas below are implemented for
+non-trace calls using the exact built-in `LongestFeasiblePolicy`; generic custom
+policies retain their list-based candidate interface. Next-acceptor-state lookup
+now reuses the validated DFA-symbol cache.
+
+Terminal/backoff closure in lazy virtual graphs and duration specialization
+validation were corrected, with regressions that activate the actual fast path.
+Current measured outcomes and remaining tradeoffs supersede the estimates below:
+[`implementation results`](../reports/implementation_results_2026_09_07.md).
+
 The main reference workload is the Bach Prelude pitch-only policy-stack setup:
 
 - training length: 592 pitch events
@@ -407,57 +423,34 @@ Recommendation:
 - any future BP backend should change the overall computation model, not just
   the memo key representation.
 
-## Easy Safe Wins Still Available
+## Sampling Optimizations and Remaining Small Options
 
-These are low-risk and mostly affect sampling, not BP/backward preparation.
+The first three items were completed in September 2026. Their combined measured
+effect is recorded in the implementation report; earlier individual estimates
+are not additive performance guarantees.
 
 ### Return Cached Candidate Sets Without Copying
 
-Current behavior stores cached candidate sets as tuples but returns
-`list(cached)`. If policies do not mutate candidate collections, the API can
-accept a sequence and avoid the copy.
-
-Expected gain:
-
-- sampling: roughly 2-8%;
-- BP: no change.
-
-Risk:
-
-- low, but requires checking custom `OrderPolicy` expectations.
+Status: implemented for non-trace calls with the exact built-in
+`LongestFeasiblePolicy`. Its first-feasible candidate cache returns tuples
+directly. Custom policies retain their existing list-based interface.
 
 ### Fast Path For `LongestFeasiblePolicy`
 
-The default policy often selects the first non-empty candidate set. The current
-generic policy path still creates `PolicyDecision` and `CandidateChoice`
-objects. Non-trace sampling only needs the selected edge and order.
+Status: implemented. Non-trace sampling stops at the first feasible order and
+draws an edge without allocating `PolicyDecision` or `CandidateChoice` objects.
+Sequence-only calls also avoid allocating discarded order arrays. Traces and
+custom policies retain full candidate evaluation; a first trace can consequently
+cost more than a plain sample.
 
-Expected gain:
+### Reuse Next Acceptor State
 
-- sampling: roughly 5-15%;
-- BP: no change.
-
-Risk:
-
-- low if restricted to the exact built-in `LongestFeasiblePolicy`;
-- generic policies should keep the existing path.
-
-### Store Next Acceptor State In Candidate Sets
-
-Candidate construction already computes `next_acceptor_state` to test
-feasibility. Sampling recomputes it after an edge is selected. Storing the next
-state alongside the edge and weight avoids that duplicate transition lookup.
-
-Expected gain:
-
-- sampling: roughly 2-5%;
-- BP: no change.
-
-Risk:
-
-- low, but changes the internal candidate data shape.
+Status: implemented through the shared DFA-symbol transition cache. Generic
+sampling reuses cached transitions without changing the candidate data shape.
 
 ### Prefilter Non-Forbidden Outgoing Edges
+
+Status: optional future experiment.
 
 The code often checks `edge.symbol in forbidden_symbols` in hot loops. For
 models with explicit start/end sentinel symbols, prefiltered outgoing lists
@@ -470,7 +463,7 @@ Expected gain:
 
 Risk:
 
-- low, but probably not worth doing before the above sampling wins.
+- low; measure branch costs before adding another retained edge view.
 
 ## Bigger Architectural Options
 
@@ -579,7 +572,7 @@ Future abstraction work:
 
 ### Compiled Sampling Tables
 
-Status: recommended next library optimization.
+Status: optional follow-up; re-profile after the September sampling fast paths.
 
 Idea:
 
@@ -589,8 +582,8 @@ Idea:
 
 Expected gain:
 
-- sampling: about 1.3x-2.0x from the current implementation when drawing many
-  sequences from one prepared backend;
+- sampling: the earlier 1.3x-2.0x estimate predates the September fast paths
+  and must be remeasured against the new baseline;
 - prepare time: slightly higher;
 - BP: unchanged.
 
@@ -651,7 +644,9 @@ Verification:
 
 ### Iterative Sparse Product BP With Precompiled Product Graph
 
-Status: larger redesign.
+Status: larger redesign. Iterative positional traversal, static product-row
+sharing, and iterative evaluation for long regular horizons are implemented;
+a compact precompiled regular product backend remains future work.
 
 Idea:
 
@@ -795,13 +790,15 @@ virtual augmentation with a more compact MAXORDER/product representation.
 
 For the reusable library:
 
-1. Implement the exact duration-view quotient/lumping path for LSDB-style
-   padded cumulative-meter constraints.
-2. Implement compiled sampling tables, preferably lazy or optional.
-3. Add the remaining safe sampling wins around candidate-set copying,
-   `LongestFeasiblePolicy`, and next-acceptor-state reuse.
-4. Try the Continuator integration and let real usage guide API changes.
-5. Consider a shared suffix graph for memory and preparation cleanup.
+1. Profile full LSDB first-sample expansion and retained symbol/message caches:
+   the measured first sample still takes about 13 seconds, and the sampled/traced
+   lifecycle peaks at about 1.46 GiB on the reported machine.
+2. Use that profile to choose between tighter cache storage and an exact
+   duration-view quotient prototype; preserve the generic reference path.
+3. Reassess lazy compiled sampling tables against the completed fast paths.
+4. Exercise Continuator integration and let real usage guide API changes.
+5. Consider a shared suffix graph if cross-order source duplication remains a
+   meaningful memory cost after sharing virtual graphs across horizons.
 
 For paper BP-only performance:
 
@@ -812,8 +809,9 @@ For paper BP-only performance:
 
 For broad future performance:
 
-1. Design an iterative sparse product BP backend only if repeated prepared
-   use or larger corpora make the current recursive memoization inadequate.
+1. Consider a compact precompiled regular product backend if larger corpora
+   justify its preparation and memory costs. Long-horizon stack safety is
+   already handled by iterative evaluation.
 2. Consider optional compiled acceleration only after the library interface has
    stabilized.
 

@@ -1,10 +1,12 @@
 import math
 import random
+from collections import Counter
 from itertools import product
 
 from scripts.eval_bach_scalability import forbidden_windows
 from vo_regular_bp import (
     DFA,
+    ConstraintSet,
     LongestFeasiblePolicy,
     OrderStackModel,
     all_of,
@@ -14,10 +16,66 @@ from vo_regular_bp import (
     forbidden_substring_acceptor,
     padded_melody_duration_view_quotient_diagnostics,
     positional_acceptor,
+    prepare_constrained_order_stack,
     run_order_stack_dfa_bp,
     run_order_stack_masked_dfa_bp,
 )
 from vo_regular_bp.order_stack_bp import FixedOrderContextGraph, StackEdge
+
+
+def test_equal_duration_symbols_with_different_permissions_keep_generic_mass():
+    model = OrderStackModel(
+        {
+            ("s",): Counter({"a": 1, "b": 1}),
+            ("a",): Counter({"a": 1, "b": 1, "P": 1}),
+            ("b",): Counter({"a": 1, "b": 1, "P": 1}),
+            ("P",): Counter({"P": 1}),
+        },
+        max_order=1,
+    )
+    for blocked in ("a", "b"):
+
+        def transition(state, symbol):
+            total, ended = state
+            if symbol == "P":
+                return (total, True) if total == 2 else None
+            if ended or total == 2 or (total == 1 and symbol == blocked):
+                return None
+            return (total + 1, False)
+
+        acceptor = DFA(
+            start_state=(0, False),
+            states={(t, e) for t in range(3) for e in (False, True)},
+            transition_func=transition,
+            accept_func=lambda q: q[0] == 2,
+            name="padded_melody_duration_total",
+        )
+        optimized = prepare_constrained_order_stack(
+            model,
+            ConstraintSet(regular_acceptors=(acceptor,)),
+            length=2,
+            prefix=("s",),
+        ).result
+        generic = run_order_stack_dfa_bp(model, acceptor, length=2, prefix=("s",))
+        assert optimized.start_order_masses() == generic.start_order_masses() == ((1, 1 / 3),)
+        for seq in product(("a", "b", "P"), repeat=2):
+            assert _policy_stack_probability(optimized, seq) == _policy_stack_probability(
+                generic, seq
+            )
+
+
+def test_duration_name_does_not_override_custom_acceptance():
+    model = OrderStackModel.from_sequences([("N1", "N1", "P", "P")], max_order=1)
+    acceptor = _lsdb_style_duration_acceptor({"N1": 1}, pad_symbol="P", target=2)
+    acceptor._accept_func = lambda state: state == (1, False)
+    result = prepare_constrained_order_stack(
+        model,
+        ConstraintSet(regular_acceptors=(acceptor,)),
+        length=1,
+        prefix=("N1",),
+    ).result
+    assert result.backwards[1].padded_melody_spec is None
+    assert result.sample(rng=0) == ("N1",)
 
 
 def test_masked_dense_policy_stack_matches_generic_composite_distribution():
@@ -119,13 +177,14 @@ def test_padded_melody_fast_path_matches_generic_product_distribution():
         min_notes,
         pad_symbol=pad,
     )
-    optimized = run_order_stack_dfa_bp(
+    optimized = prepare_constrained_order_stack(
         model,
-        all_of(duration_acceptor, final_acceptor, min_note_acceptor),
+        ConstraintSet(regular_acceptors=(duration_acceptor, final_acceptor, min_note_acceptor)),
         length=length,
         prefix=(start,),
         policy=LongestFeasiblePolicy(),
-    )
+    ).result
+    assert optimized.backwards[1].padded_melody_spec is not None
     generic = run_order_stack_dfa_bp(
         model,
         _manual_product_acceptor(

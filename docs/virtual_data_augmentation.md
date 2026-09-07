@@ -36,10 +36,32 @@ augmentation. The tests compare:
 
 - augmented continuation counts;
 - full fixed-order graph edges;
+- lazy graph support and outgoing rows on small randomized corpora, including
+  unique terminal emissions and unseen contexts requiring suffix backoff;
 - positional order-stack distributions;
 - regular/MAXORDER order-stack distributions.
 
 The target distribution is unchanged relative to explicit augmentation.
+
+Lazy graphs retain valid emissions even when their destination has no training
+continuation row. Context lookup resolves reachable backoff contexts instead of
+treating absence from the count index as a forbidden transition.
+
+## Reuse and Cache Lifetime
+
+One virtual model shares its lazy fixed-order graphs across prefixes and
+horizons, preserving stable context IDs. Horizon-dependent backward messages
+remain on the prepared plans. Treat training counts and transforms as immutable
+while these objects are in use.
+
+`model.clear_caches()` releases model-owned compiled views and count/transform
+caches. Existing plans retain their graph references and remain usable; discard
+them too when reclaiming their memory. Subsequent preparation can build fresh
+shared graphs.
+
+The [September implementation report](../reports/implementation_results_2026_09_07.md)
+records current LSDB lifecycle measurements, including 40% less retained traced
+memory during full preparation and the remaining cost of first-sample expansion.
 
 ## Bach 12-Transposition Measurement
 
@@ -49,7 +71,7 @@ Command:
 python scripts/eval_virtual_augmentation.py
 ```
 
-First measurement on the Bach MAXORDER + final-C setup:
+Historical first measurement on the Bach MAXORDER + final-C setup:
 
 | method | stored events | full graph states | BP graph states | product edges |
 |---|---:|---:|---:|---:|

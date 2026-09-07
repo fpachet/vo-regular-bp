@@ -1,7 +1,66 @@
 import math
+import random
 from itertools import product
+import pytest
 
 import vo_regular_bp as vbp
+
+
+def test_lazy_reverse_reachability_matches_complete_graph_on_small_corpora():
+    rng = random.Random(417)
+    for _ in range(8):
+        sequence = tuple(rng.randrange(3) for _ in range(7))
+        explicit = vbp.OrderStackModel.from_sequences([sequence], max_order=3)
+        virtual = vbp.VirtualAugmentedOrderStackModel.from_sequences(
+            [sequence],
+            max_order=3,
+            transforms=vbp.integer_shift_transforms([0]),
+        )
+        lazy = virtual.compile_graphs_for_plan(length=2)
+        for order in range(1, 4):
+            eager = explicit.compile_graph(order)
+            for size in range(1, order + 1):
+                for context in product(range(3), repeat=size):
+                    expected = eager.state_id(context)
+                    actual = lazy[order].state_id(context)
+                    assert (actual is None) == (expected is None), (sequence, order, context)
+                    if expected is not None:
+
+                        def row_signature(graph, state):
+                            return {
+                                (edge.symbol, graph.contexts[edge.dst], edge.probability)
+                                for edge in graph.outgoing[state]
+                            }
+
+                        assert row_signature(lazy[order], actual) == row_signature(eager, expected)
+
+
+@pytest.mark.parametrize(
+    "training,prefix,order,horizon",
+    [
+        ((0, 1), (0,), 1, 1),
+        ((0, 1, 0, 2), (0, 1), 2, 3),
+        ((0, 1, 0, 2), (1, 0, 1), 3, 3),
+    ],
+)
+def test_lazy_virtual_closure_matches_materialized_terminal_and_backoff_paths(
+    training, prefix, order, horizon
+):
+    explicit = vbp.OrderStackModel.from_sequences([training], max_order=order)
+    virtual = vbp.VirtualAugmentedOrderStackModel.from_sequences(
+        [training],
+        max_order=order,
+        transforms=vbp.integer_shift_transforms([0]),
+    )
+    reference = vbp.run_order_stack_dfa_bp(
+        explicit, vbp.true_acceptor(), length=horizon, prefix=prefix
+    )
+    result = vbp.run_order_stack_dfa_bp(virtual, vbp.true_acceptor(), length=horizon, prefix=prefix)
+    assert result.start_order_masses() == reference.start_order_masses()
+    for sequence in product(explicit.alphabet, repeat=horizon):
+        assert _regular_policy_stack_probability(
+            result, sequence
+        ) == _regular_policy_stack_probability(reference, sequence)
 
 
 def test_virtual_augmented_counts_match_explicit_transformed_sequences():
@@ -25,6 +84,28 @@ def test_virtual_augmented_counts_match_explicit_transformed_sequences():
             context,
             max_order=2,
         ) == explicit.continuation_distribution_with_order(context, max_order=2)
+
+
+def test_virtual_source_graphs_are_shared_across_horizons_and_cache_reset_is_safe():
+    model = vbp.VirtualAugmentedOrderStackModel.from_sequences(
+        [(0, 1, 0)],
+        max_order=2,
+        transforms=vbp.integer_shift_transforms([0, 12]),
+    )
+    graphs = model.compile_graphs_for_plan(length=1)
+    for length in range(2, 33):
+        assert model.compile_graphs_for_plan(length=length) is graphs
+        assert model.compile_graphs_for_prefix(prefix=(0, 1), length=length) is graphs
+    plan = vbp.prepare_constrained_order_stack_plan(
+        model,
+        vbp.ConstraintSet(regular_acceptors=(vbp.true_acceptor(),)),
+        length=3,
+    )
+    result = plan.for_prefix((0,))
+    before = result.sample_many(10, rng=42)
+    model.clear_caches()
+    assert model.compile_graphs_for_plan(length=1) is not graphs
+    assert result.sample_many(10, rng=42) == before
 
 
 def test_virtual_augmented_full_graph_matches_explicit_graph():
