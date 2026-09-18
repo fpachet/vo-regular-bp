@@ -1,4 +1,4 @@
-"""Exact constrained sampling for sparse variable-order context models.
+"""Constrained sampling and optimization for sparse variable-order models.
 
 The top-level package exports the stable library surface: generic product BP,
 Continuator-style order-stack backends, event adapters, constraint builders, and
@@ -133,7 +133,13 @@ from .orbit_diagnostics import (
 )
 from .padding import append_padding
 from .positional_bp import LazyBackoffContextModel, PositionalBPResult, run_positional_bp
-from .product_bp import ProductBPResult, run_bp, sample_exact
+from .product_bp import (
+    MostProbableSequenceResult,
+    ProductBPResult,
+    most_probable_sequence,
+    run_bp,
+    sample_exact,
+)
 
 __all__ = [
     "__version__",
@@ -154,10 +160,12 @@ __all__ = [
     "meter_acceptor",
     "positional_acceptor",
     "true_acceptor",
-    # General exact product BP.
+    # General product inference.
     "LazyBackoffContextModel",
     "PositionalBPResult",
     "ProductBPResult",
+    "MostProbableSequenceResult",
+    "most_probable_sequence",
     "run_bp",
     "run_positional_bp",
     "sample_exact",

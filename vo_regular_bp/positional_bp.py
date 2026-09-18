@@ -15,22 +15,14 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 import random
-from typing import Protocol
 
-from .context import Context, ContextGraph, Edge, Symbol, _as_context
+from .context import Context, ContextGraph, ContextModel, Edge, Symbol, _as_context
 from .product_bp import _sample_order
 from ._numerics import NEG_INF, log_mass, log_sum, mass_from_log, relative_weights
 
 PositionConstraint = Callable[[Symbol], bool] | Iterable[Symbol]
 PositionConstraints = Mapping[int, PositionConstraint]
 AllowedForbiddenSymbols = Mapping[int, Iterable[Symbol]]
-
-
-class ContextModel(Protocol):
-    start_state: Context
-
-    def outgoing(self, context: Iterable[Symbol] | Context) -> tuple[Edge, ...]:
-        ...
 
 
 class LazyBackoffContextModel:

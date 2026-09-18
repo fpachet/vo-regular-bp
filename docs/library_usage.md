@@ -5,11 +5,14 @@ package:
 
 ```python
 from vo_regular_bp import (
+    ContextGraph,
     ConstraintSet,
     OrderStackModel,
+    most_probable_sequence,
     prepare_constrained_order_stack,
     prepare_constrained_order_stack_plan,
     prepare_until_order_stack,
+    run_bp,
 )
 ```
 
@@ -18,6 +21,12 @@ or any other hashable values. Projects with richer event objects can use
 `EventCodec` or the Continuator-shaped facade to encode events at the boundary.
 
 ## Backends
+
+Use `run_bp(graph, acceptor, length=...)` for partition computation and
+conditional sampling from a generic context graph. Use
+`most_probable_sequence(graph, acceptor, length=...)` to optimize the same
+fixed-horizon model. Its result reports the sequence, unnormalized log-weight,
+and feasibility; see the [optimization contract](#most-probable-sequence) below.
 
 Use `prepare_constrained_order_stack(...)` when you already have an
 `OrderStackModel`. It compiles constraints, runs the backward pass once, and
@@ -56,6 +65,104 @@ horizon, and constraints.
 
 For the lower-level exact product-BP engine, use `ContextGraph`, DFA helpers,
 and `run_bp(...)`.
+
+## Most Probable Sequence
+
+The public fixed-horizon optimization API is:
+
+```python
+from vo_regular_bp import MostProbableSequenceResult, most_probable_sequence
+
+best = most_probable_sequence(
+    graph, acceptor, length=length,
+    start_context=None, start_acceptor_state=None,
+)
+```
+
+It returns an immutable `MostProbableSequenceResult`:
+
+| Field | Feasible model | Infeasible model |
+| --- | --- | --- |
+| `sequence` | Tuple of exactly `length` symbols | `None` |
+| `log_weight` | Unnormalized natural-log path weight | `-math.inf` |
+| `feasible` | `True` | `False` |
+
+For a Snarky adapter, this is a maximization operation over the same weighted
+model as `run_bp`, with no random seed or partition normalization. Its objective
+is the product of source edge probabilities and acceptor transition weights.
+The existing generic model has unit initial weight and terminal weight one for
+accepting states, zero otherwise; it has no separate initial/terminal weight
+hooks. Start overrides select the state immediately before the first emission.
+They do not consume or score a prefix. At length zero, acceptance of that start
+acceptor state determines feasibility, and the empty product has log weight zero.
+For positive accepted mass, conditioning divides every candidate weight by the
+same constant and therefore preserves the optimum.
+
+Supported sources are `ContextGraph` (first-order or variable-order, including
+`from_backoff_sequences`) and `LazyBackoffContextModel`. Structural sources
+implementing `start_state` and `outgoing(context)` with ordinary `Edge` rows
+also work. They must obey the same deterministic, finite, nonnegative probability
+contract as a validated `ContextGraph`: at most one edge per symbol per context,
+normalized nonempty rows, and stable transitions throughout a call. Acceptor
+transitions must likewise be deterministic and stable; missing transitions
+reject, missing `transition_weight` means one, and zero weight forbids an edge.
+Negative or nonfinite acceptor weights raise `ValueError`, as in BP. Horizon
+length must be a nonnegative integer; negative lengths raise `ValueError`.
+
+Positional restrictions use `positional_acceptor`; combine them with regular
+constraints using `all_of`, exactly as for generic BP. Weighted acceptors,
+including weights greater than one, use their existing multiplicative semantics.
+Explicit backoff mixtures already marginalize order contributions into each
+edge probability. The operation optimizes emitted sequences under that mixture;
+`order_weights` metadata does not add another factor to the objective.
+
+The implementation builds only horizon-reachable product rows, caches each
+product-state row, and never scans all source or acceptor states. Lazy sources
+remain lazy; terminal-layer outgoing rows are not requested. Max-plus DP with
+backpointers takes time linear in the time-indexed reachable states and edges,
+apart from source/acceptor callback costs. Memory holds the sparse layered
+product, shared transition rows, backpointers, and two score layers. It performs
+neither complete-word enumeration nor partition computation. An optimization
+call is independent of a previous BP result; no reusable optimization plan is
+provided yet.
+
+Ties use the first outgoing edge with the largest **computed** score, recursively
+at each position. This is the existing graph/sampler row order (usually mapping
+insertion order), not sorted symbol order. It works with noncomparable hashable
+symbols and is independent of product-state set iteration. Reordering source
+rows can change which tied optimum is returned. Custom or transformed sources
+must preserve row ordering if identical tie results are required.
+
+Arithmetic uses Python floats and `math.log` separately on each positive source
+and acceptor factor, then adds log scores backwards. It never multiplies those
+two factors or full path weights before taking logs, so even subnormal positive
+inputs retain support. Logs and additions still round: distinct real weights
+can become computed ties or be misordered, and mathematically equal products
+can have unequal computed scores. No comparison tolerance is applied. This is
+exhaustive dynamic programming over the reachable product, but not an exact-real
+or rational optimality certificate. A Snarky adapter must expose that limitation
+and treat `log_weight` as an approximate unnormalized score, not a probability
+or a certified bound. Values already rounded to zero upstream cannot be recovered;
+for example, `all_of` multiplies component acceptor weights in ordinary floating
+point before this operation sees them. Overflow in such upstream weights is
+rejected by the existing weight validator.
+
+The separate `OrderStackModel`, `FixedOrderContextGraph`, prepared order-stack
+backends, Continuator/event facades, and first-hit variable-length APIs are not
+accepted by this operation. Their policy may select or randomize orders using
+future feasibility, suppress symbols, or select a length. Those decisions define
+a different distribution from one fixed context graph. In particular, maximizing
+a latent order path would not generally maximize the marginal probability of
+an emitted sequence. Extending these APIs requires an explicit objective and
+state representation for the policy distribution. A caller may explicitly model
+its intended source as a generic `ContextGraph`; doing so must establish the
+desired semantics rather than assume equivalence to an order-stack policy.
+
+Run `python examples/most_probable_sequence.py` for optimization and sampling on
+the same model. Its best word is `('b', 'x')` with weight `0.4`, while sampling
+also returns `('a', 'x')` and `('a', 'y')`, each with weight `0.3`. Greedy selection
+from conditional sampling weights chooses `a` first because its *total* suffix
+mass is `0.6`, and consequently misses the best complete word.
 
 ## Cache Lifetime and Numerical Range
 
@@ -389,6 +496,8 @@ filtering.
 
 ## Examples
 
+- `examples/most_probable_sequence.py`: optimize and sample one fixed-horizon
+  context graph with the same positional acceptor.
 - `examples/symbolic_order_stack_backend.py`: plain symbolic sequence backend
   with final pitch-class and MAXORDER constraints.
 - `examples/until_order_stack_backend.py`: variable-length first-hit

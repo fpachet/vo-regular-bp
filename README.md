@@ -5,6 +5,11 @@ sparse variable-order context models, with support for positional masks, meter
 constraints, forbidden-substring constraints, and reusable order-stack
 backends.
 
+For fixed-horizon context models, `most_probable_sequence(...)` complements
+partition computation and conditional sampling with optimization over the same
+weighted constraints. It returns a maximizing sequence and its unnormalized
+log-weight, or explicit infeasibility, subject to floating-point rounding.
+
 The core algorithm runs backward dynamic programming on the reachable product
 of a context graph and a deterministic acceptor. Sampling then chooses each next
 symbol proportionally to its model probability times the downstream beta value,
@@ -180,6 +185,46 @@ returns a `ProductBPResult` with:
 - product-state and edge-count diagnostics for scalability studies.
 
 `sample_exact(...)` is a convenience wrapper that runs BP and draws one sample.
+
+### Most Probable Sequence
+
+`most_probable_sequence(graph, acceptor, length=...)` finds an accepted sequence
+with maximum unnormalized path weight using max-plus DP and backpointers on the
+same sparse product. It does not compute a partition function.
+
+```python
+from vo_regular_bp import (
+    ContextGraph, most_probable_sequence, positional_acceptor, run_bp,
+)
+
+graph = ContextGraph.from_probabilities({
+    (): {"a": 0.6, "b": 0.4},
+    ("a",): {"x": 0.5, "y": 0.5},
+    ("b",): {"x": 1.0},
+})
+acceptor = positional_acceptor(2, {1: {"x", "y"}})
+
+best = most_probable_sequence(graph, acceptor, length=2)
+if best.feasible:
+    print(best.sequence, best.log_weight)  # ('b', 'x'), approximately -0.916291
+    print(run_bp(graph, acceptor, length=2).sample(rng=7))  # ('a', 'x')
+```
+
+Optimization returns one optimum; sampling draws according to the weights of
+all accepted sequences. Here `('b', 'x')` has weight `0.4`, while `('a', 'x')`
+and `('a', 'y')` each have weight `0.3`. Greedy sampling chooses `a` first
+because its total continuation mass is `0.6`, missing the best complete sequence.
+Infeasibility returns `sequence=None`,
+`log_weight=-inf`, and `feasible=False`; an accepted empty sequence returns `()`
+and log weight `0.0`.
+
+The initial scope is fixed-horizon generic context graphs, including explicit
+and lazy backoff mixtures, with hard or weighted deterministic acceptors.
+Policy-driven order-stack and variable-length APIs are not optimization backends.
+Computed ties follow outgoing-edge order. Log arithmetic avoids path-product
+underflow but still rounds and can misorder nearly equal weights.
+See the [integration contract](docs/library_usage.md#most-probable-sequence)
+and [complete optimization/sampling example](examples/most_probable_sequence.py).
 
 ### Source Graph Minimization And Experimental Merging
 

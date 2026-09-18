@@ -1,4 +1,4 @@
-"""Backward dynamic programming on reachable context-acceptor products."""
+"""Sum-product and max-plus DP on reachable context-acceptor products."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import math
 from typing import Hashable, Iterable, Sequence
 
 from .acceptors import DFA, transition_weight as regular_transition_weight
-from .context import Context, ContextGraph, Symbol, _as_context
+from .context import Context, ContextModel, Symbol, _as_context
 
 from ._numerics import NEG_INF, log_mass, log_sum, mass_from_log, relative_weights
 
@@ -24,9 +24,25 @@ class ProductEdge:
     order_weights: tuple[tuple[int, float], ...] = ()
 
 
+@dataclass(frozen=True)
+class MostProbableSequenceResult:
+    """An optimum sequence and its unnormalized natural-log path weight.
+
+    Infeasibility is represented by ``sequence=None`` and ``log_weight=-inf``.
+    The accepted empty sequence is ``()`` with log weight zero.
+    """
+
+    sequence: tuple[Symbol, ...] | None
+    log_weight: float
+
+    @property
+    def feasible(self) -> bool:
+        return self.sequence is not None
+
+
 @dataclass
 class ProductBPResult:
-    graph: ContextGraph
+    graph: ContextModel
     acceptor: DFA
     length: int
     start_state: ProductState
@@ -227,15 +243,19 @@ class ProductBPResult:
         return min(0.0, log_probability - self.log_partition_function)
 
 
-def run_bp(
-    graph: ContextGraph,
+def _build_product_graph(
+    graph: ContextModel,
     acceptor: DFA,
     *,
     length: int,
     start_context: Iterable[Symbol] | Context | None = None,
     start_acceptor_state: Hashable | None = None,
-) -> ProductBPResult:
-    """Run exact backward DP on the reachable product for a fixed horizon."""
+) -> tuple[
+    ProductState,
+    list[set[ProductState]],
+    list[dict[ProductState, tuple[ProductEdge, ...]]],
+]:
+    """Build horizon-reachable rows once, preserving outgoing edge order."""
 
     if length < 0:
         raise ValueError("length must be non-negative")
@@ -282,6 +302,98 @@ def run_bp(
         edges_by_time.append(current_edges)
         layers.append(next_layer)
 
+    return start, layers, edges_by_time
+
+
+def most_probable_sequence(
+    graph: ContextModel,
+    acceptor: DFA,
+    *,
+    length: int,
+    start_context: Iterable[Symbol] | Context | None = None,
+    start_acceptor_state: Hashable | None = None,
+) -> MostProbableSequenceResult:
+    """Maximize unnormalized path weight on a fixed-horizon product graph.
+
+    Uses the same model as :func:`run_bp`: source probabilities multiplied by
+    acceptor transition weights, unit initial weight, and Boolean terminal
+    acceptance. Explicit backoff mixtures (including lazy models) are supported;
+    policy-driven order stacks are not. Start overrides select the state before
+    the first emission; no prefix weight is included.
+
+    Max-plus DP uses natural logs of the individual positive float factors,
+    without computing a partition function or multiplying factors first. This
+    avoids path-product underflow/overflow, but logs and additions still round:
+    nearly equal real weights may be misordered or become computed ties. No
+    exact-real or rational optimality certificate is provided. On exactly equal
+    computed scores, the first edge in ``graph.outgoing(context)`` wins at each
+    position; symbols are never sorted and no tolerance is applied. Stable row
+    ordering therefore gives deterministic ties, independently of state-set
+    iteration order.
+
+    Returns ``sequence=None``, ``log_weight=-inf``, and ``feasible=False`` when
+    no positive-weight accepted path exists. A negative length raises ValueError.
+    """
+
+    start, layers, edges_by_time = _build_product_graph(
+        graph,
+        acceptor,
+        length=length,
+        start_context=start_context,
+        start_acceptor_state=start_acceptor_state,
+    )
+    scores = {state: 0.0 for state in layers[length] if acceptor.is_accepting(state[1])}
+    choices: list[dict[ProductState, ProductEdge]] = [{} for _ in range(length)]
+    for time in range(length - 1, -1, -1):
+        current_scores: dict[ProductState, float] = {}
+        for state, edges in edges_by_time[time].items():
+            best_score = NEG_INF
+            for edge in edges:
+                suffix_score = scores.get(edge.next_state, NEG_INF)
+                if edge.probability <= 0.0 or suffix_score == NEG_INF:
+                    continue
+                score = (
+                    log_mass(edge.probability)
+                    + log_mass(edge.transition_weight)
+                    + suffix_score
+                )
+                if score > best_score:
+                    best_score = score
+                    choices[time][state] = edge
+            if best_score != NEG_INF:
+                current_scores[state] = best_score
+        scores = current_scores
+
+    log_weight = scores.get(start, NEG_INF)
+    if log_weight == NEG_INF:
+        return MostProbableSequenceResult(sequence=None, log_weight=NEG_INF)
+
+    state = start
+    sequence: list[Symbol] = []
+    for time in range(length):
+        edge = choices[time][state]
+        sequence.append(edge.symbol)
+        state = edge.next_state
+    return MostProbableSequenceResult(sequence=tuple(sequence), log_weight=log_weight)
+
+
+def run_bp(
+    graph: ContextModel,
+    acceptor: DFA,
+    *,
+    length: int,
+    start_context: Iterable[Symbol] | Context | None = None,
+    start_acceptor_state: Hashable | None = None,
+) -> ProductBPResult:
+    """Run exact backward DP on the reachable product for a fixed horizon."""
+
+    start, layers, edges_by_time = _build_product_graph(
+        graph,
+        acceptor,
+        length=length,
+        start_context=start_context,
+        start_acceptor_state=start_acceptor_state,
+    )
     betas: list[dict[ProductState, float]] = [dict() for _ in range(length + 1)]
     betas[length] = {
         state: 1.0 if acceptor.is_accepting(state[1]) else 0.0
@@ -345,7 +457,7 @@ def run_bp(
 
 
 def sample_exact(
-    graph: ContextGraph,
+    graph: ContextModel,
     acceptor: DFA,
     *,
     length: int,

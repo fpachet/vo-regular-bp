@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 import math
-from typing import Hashable, Iterable, Mapping, Sequence
+from typing import Hashable, Iterable, Mapping, Protocol, Sequence
 
 Symbol = Hashable
 Context = tuple[Symbol, ...]
@@ -19,6 +19,15 @@ class Edge:
     probability: float
     next_state: Context
     order_weights: tuple[tuple[int, float], ...] = ()
+
+
+class ContextModel(Protocol):
+    """Context graph interface shared by eager and lazy inference engines."""
+
+    start_state: Context
+
+    def outgoing(self, context: Iterable[Symbol] | Context) -> tuple[Edge, ...]:
+        ...
 
 
 def _as_context(value: Iterable[Symbol] | Context | None) -> Context:
