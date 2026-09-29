@@ -1,7 +1,12 @@
 # Variable-Order Regular BP Paper Experiments
 
-This folder contains the experiment implementations used for the
-variable-order regular BP paper.  They are kept outside the library package so
+This folder contains the experiment implementations used for
+[*Exact Regular-Constrained Variable-Order Markov Generation via Sparse
+Context-State Belief Propagation*](https://arxiv.org/abs/2605.07839), accepted to
+the **NeurIPS 2026 main track**. See the [paper citation](../../README.md#paper)
+for BibTeX.
+
+The experiments are kept outside the library package so
 the reusable API can evolve without mixing in paper-specific benchmarking code.
 
 The top-level `scripts/` files remain as compatibility launchers, so existing

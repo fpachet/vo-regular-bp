@@ -511,6 +511,8 @@ filtering.
 - `examples/padded_duration_order_stack_backend.py`: variable musical length
   in a fixed horizon using zero-duration absorbing PAD symbols.
 
-Paper experiments are kept separately under `paper/variable_order_regular_bp/`.
+The accompanying paper was **accepted to the NeurIPS 2026 main track**; see the
+[paper and citation](../README.md#paper). Its experiments are kept separately
+under [`paper/variable_order_regular_bp/`](../paper/variable_order_regular_bp/).
 Compatibility wrappers remain under `scripts/` for the existing evaluation
 commands.

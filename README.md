@@ -21,18 +21,24 @@ constraints and Continuator-style order-stack backoff policies.
 
 ## Paper
 
+The paper accompanying this library was **accepted to the NeurIPS 2026 main
+track**.
+
 If you use this library or the accompanying experiments, please cite the
-corresponding arXiv paper:
+paper:
 
 Pachet, F. (2026). *Exact Regular-Constrained Variable-Order Markov Generation
-via Sparse Context-State Belief Propagation*. arXiv:2605.07839.
-https://doi.org/10.48550/arXiv.2605.07839
+via Sparse Context-State Belief Propagation*. Accepted to the NeurIPS 2026 main
+track. [arXiv:2605.07839](https://arxiv.org/abs/2605.07839).
+
+The BibTeX entry below retains the arXiv version and records the acceptance:
 
 ```bibtex
 @misc{pachet2026exactregularconstrainedvariableorder,
   title = {Exact Regular-Constrained Variable-Order Markov Generation via Sparse Context-State Belief Propagation},
   author = {Pachet, Fran{\c{c}}ois},
   year = {2026},
+  note = {Accepted to the {NeurIPS} 2026 main track},
   eprint = {2605.07839},
   archivePrefix = {arXiv},
   primaryClass = {cs.AI},
