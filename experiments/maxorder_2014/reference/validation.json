@@ -1,0 +1,15 @@
+{
+  "date": "2026-09-30",
+  "independent_thresholds_checked": 17,
+  "rational_witness_factor_products_checked": 87,
+  "baseline_samples_archived": 36000,
+  "original_manuscript_files_unchanged": 20,
+  "latex_build": "passed",
+  "pdf_pages": 109,
+  "pdf_sha256": "d0b04f2be93132a3349af70bd544987ed26dfefd0dde2263208780ce81f4bd88",
+  "visual_review": "All pages at contact-sheet scale; pages 55-58 at reading scale; cover date checked separately.",
+  "remaining_limitations": [
+    "Historical tokenization and model identity unproven",
+    "Historical copy-length quartiles unreproduced"
+  ]
+}

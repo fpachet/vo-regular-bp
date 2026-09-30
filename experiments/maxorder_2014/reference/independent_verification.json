@@ -1,0 +1,27 @@
+{
+  "method": "Independent literal-suffix forward DP with Fraction probabilities",
+  "corpus_sha256": "14dd133dc9cbfaac9388912c8f0ae8662a99805dd7a3a91807dcea178447b6f8",
+  "verified_rows": [
+    {
+      "L": 5,
+      "count": 0,
+      "rational_mass": "0",
+      "float_mass": 0.0,
+      "matches_library": true
+    },
+    {
+      "L": 9,
+      "count": 2103,
+      "rational_mass": "7129770119/14982277752000",
+      "float_mass": 0.00047588025245682284,
+      "matches_library": true
+    },
+    {
+      "L": 21,
+      "count": 141467,
+      "rational_mass": "6696014803/6722816940",
+      "float_mass": 0.9960132579483861,
+      "matches_library": true
+    }
+  ]
+}

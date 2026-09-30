@@ -1,0 +1,33 @@
+{
+  "source_url": "https://lib.ru/LITRA/PUSHKIN/ENGLISH/onegin_j.txt",
+  "source_sha256": "a2329061c6cea639f7b2f77df80d7a22ff6329ee368b4c413f9ad83886231d6c",
+  "retrieved": "2026-09-30",
+  "extracted_chapter_bodies_sha256": "70e14013cc44dcb91c3b306dc94959e94f1695d875d60f82d8c277a16928efe3",
+  "source_note": "Raw hash differs from September 17; all archived chapter token counts, vocabulary counts and segmentation counts agree. HTML includes a mutable popularity footer.",
+  "historical_preprocessing_recovered": false,
+  "extraction": "Eight chapter bodies; remove notes, superscripts, page numbers and non-verse indentation; lowercase Unicode words with internal hyphens/apostrophes retained.",
+  "word_regex": "[^\\W\\d_]+(?:[-'][^\\W\\d_]+)*",
+  "sentence_split_regex": "[.!?;]+",
+  "primary_variant": "chapters_with_sentence_markers",
+  "rationale": "The original describes words and sentence separators. Semicolon splitting is an explicit reconstruction assumption, not a recovered historical tokenizer.",
+  "variants": {
+    "chapters_words": {
+      "sequences": 8,
+      "tokens": 32723,
+      "vocabulary": 6910,
+      "sha256": "9a3c743a1fccf1bfc38e2943ebd0e25e6fe1ce1a0e2a7174f5ff1f1d64267265"
+    },
+    "sentences_words": {
+      "sequences": 2150,
+      "tokens": 32723,
+      "vocabulary": 6910,
+      "sha256": "e4d50ebf9496b6671c57a92efb8d24823c944259cd8fdfa76bc2c47ab3e76950"
+    },
+    "chapters_with_sentence_markers": {
+      "sequences": 8,
+      "tokens": 34873,
+      "vocabulary": 6911,
+      "sha256": "14dd133dc9cbfaac9388912c8f0ae8662a99805dd7a3a91807dcea178447b6f8"
+    }
+  }
+}

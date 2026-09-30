@@ -1,0 +1,34 @@
+{
+  "date": "2026-09-30",
+  "status": "passed",
+  "scope": "Full packaged end-to-end reproduction with saved Johnston source",
+  "python": "3.12.14",
+  "engine_revision": "614697b3e16444dc7ca81d4f74fe273b7d3b28a0",
+  "reference_hashes_verified": 93,
+  "baseline_samples_reproduced": 36000,
+  "independently_verified_sentence_thresholds": 17,
+  "witnesses_rescored": 29,
+  "rational_scoring_orders": [
+    1,
+    2,
+    3
+  ],
+  "reference_comparison": {
+    "status": "passed",
+    "experiments": [
+      "chapters_words_loss",
+      "length20_baseline",
+      "length40_baseline",
+      "primary_baseline",
+      "primary_loss",
+      "sentences_words_baseline",
+      "sentences_words_full_loss",
+      "sentences_words_loss"
+    ],
+    "witnesses_and_exact_scores_match": true,
+    "sample_files_match": true
+  },
+  "figure_and_table_byte_identical_to_manuscript": true,
+  "corpus_download_tested": false,
+  "source_preparation_tested": true
+}

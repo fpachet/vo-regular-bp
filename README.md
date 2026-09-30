@@ -47,6 +47,15 @@ The BibTeX entry below retains the arXiv version and records the acceptance:
 }
 ```
 
+## MaxOrder reconstruction
+
+The [MaxOrder (2014) experiment](experiments/maxorder_2014/README.md) provides
+corpus preparation, strict-order and suffix-backoff comparisons, independent
+exact count and probability checks, archived reference results, and commands to
+regenerate the revised chapter's figures and table. It recovers 29 admissible
+Onegin sequences and explains the distinction between feasibility and scoring
+orders. The historical corpus identity and copy-length quartiles remain unresolved.
+
 ## Install
 
 The package has no declared runtime dependencies and requires Python 3.10 or

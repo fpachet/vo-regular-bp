@@ -1,0 +1,30 @@
+{
+  "date": "2026-09-30",
+  "status": "passed",
+  "scope": "Main packaged reproduction using a fresh source download before publication",
+  "python": "3.14.6",
+  "engine_revision": "614697b3e16444dc7ca81d4f74fe273b7d3b28a0",
+  "reference_hashes_verified": 93,
+  "corpus_download_tested": true,
+  "source_preparation_tested": true,
+  "baseline_samples_reproduced": 12000,
+  "independently_verified_sentence_thresholds": 17,
+  "witnesses_rescored": 29,
+  "rational_scoring_orders": [
+    1,
+    2,
+    3
+  ],
+  "reference_comparison": {
+    "status": "passed",
+    "experiments": [
+      "sentences_words_baseline",
+      "sentences_words_full_loss"
+    ],
+    "witnesses_and_exact_scores_match": true,
+    "sample_files_match": true
+  },
+  "figures_rerun": false,
+  "boundary_and_horizon_comparisons_rerun": false,
+  "exhaustive_toy_check": "passed"
+}

@@ -1,0 +1,103 @@
+{
+  "library": {
+    "commit": "614697b3e16444dc7ca81d4f74fe273b7d3b28a0",
+    "working_tree_status": "",
+    "python_source_sha256": {
+      "vo_regular_bp/__init__.py": "da0ce4d8be2f526c3ddd34415490f1d5db0fc0cfa126d92d49318bb00eb7ca71",
+      "vo_regular_bp/_numerics.py": "965345a8b628e91f07b314ed53c2c842ae63f2015f8443533f24e06433bc81ac",
+      "vo_regular_bp/acceptors.py": "acb2e9178592b9d3160525b6bd12d79dad6072da98c4fa5f148e89d64b3a591f",
+      "vo_regular_bp/adapters.py": "b5590b2bca9c68c3987b34b1d65c9c6f5ca29443224536f4bee4dfcdbc9a8904",
+      "vo_regular_bp/augmentation.py": "361b0d51115d7a6f3203955c075deaab9db38084187527cf9bcfab319068bee4",
+      "vo_regular_bp/backend.py": "a120ab35966fb299b52afde21973b5c92cbbbafbd254b622b2c4818e462f7366",
+      "vo_regular_bp/brute_force.py": "9fedab8dee5383203e2c62c305640fa164596a38cb9998f188139a705cbc15ac",
+      "vo_regular_bp/constraint_builders.py": "2cc231d9eb6a563666fef9a9d9e69583a1be393bb989c1cfa5f7639b7be3a94b",
+      "vo_regular_bp/constraints.py": "ada124920e5b5b5f13be22a1f02b4c2275d80ff0153ac195b945db41398c07b9",
+      "vo_regular_bp/context.py": "1801f167fe5fd240291a5d9f18ee997936074a4f737c7d856f3a25aa7face766",
+      "vo_regular_bp/continuator.py": "750c5dc7b23cb11cbd3d65299077b9f5a80319410e4d5cc21509b778961c9c50",
+      "vo_regular_bp/experimental.py": "ac213e1792f7720b5467a36de54051bfbdef7abcca14c9f74618e4610a96a946",
+      "vo_regular_bp/metrics.py": "31ba14f296a32221e94068d7e4f4632869469beea56e8ed75126c5e18caa7ecb",
+      "vo_regular_bp/minimization.py": "271f3d10af093fe9bd58748a66fc922ecdcfea6298be896870417a3cd8c68584",
+      "vo_regular_bp/orbit_diagnostics.py": "b595c69c1bc6bc171f6787cf8bfa5bd057c35c2a258f85114773e826eb5eda33",
+      "vo_regular_bp/order_stack_bp.py": "0159451ccfcdd5b5308d70c09a4353208d171b9c072b1765190108d3cf1a5a1c",
+      "vo_regular_bp/padding.py": "dd58aaae47d91cb53b151a40c41b1fca3a631f16324beff7b438184fe7a4af84",
+      "vo_regular_bp/positional_bp.py": "580c7834c15fbe70a25da0914de589ef88a466e0281ba137610e65bcb308c60d",
+      "vo_regular_bp/product_bp.py": "e92b07dc53ef3be85450c68e58008ac9c11939f5c063f1164ad90a00149f0825"
+    }
+  },
+  "seed": 2014,
+  "historical_replication": false,
+  "self_test": {
+    "status": "passed",
+    "corpus": "ABRACADABRA",
+    "length": 9,
+    "forbidden_length": 4,
+    "supported_paths": 221,
+    "admissible_paths": 28,
+    "exact_mass": "125/2816",
+    "all_conditional_probabilities_checked": true,
+    "literal_acceptor_checks": 15625,
+    "samples_checked": 500,
+    "strict_order_2_forbid_trigrams_is_infeasible": true
+  },
+  "corpus": {
+    "path": "/private/tmp/maxorder_onegin_2026-09-30/sentences_words.json",
+    "sha256": "e4d50ebf9496b6671c57a92efb8d24823c944259cd8fdfa76bc2c47ab3e76950",
+    "sequences": 2150,
+    "tokens": 32723,
+    "vocabulary": 6910
+  },
+  "protocol": {
+    "startup": "Pooled lower-order MLE until requested context length",
+    "fixed_order": "Strict context length thereafter; dead ends terminate; condition on horizon survival",
+    "variable_order": "ContextGraph.from_sequences longest known suffix; terminal backoff allowed",
+    "boundaries": "No transitions or copied windows across supplied sequence boundaries",
+    "quantiles": "Linear interpolation at (sample_count-1)*p",
+    "baseline_length": 80,
+    "sample_count_per_condition": 1000,
+    "loss_order": 3,
+    "loss_length": 20,
+    "L_semantics": "Reject every copied substring of length L; library max_order=L-1"
+  },
+  "copy_length_experiment": [],
+  "solution_loss": {
+    "total_sequences": 15384,
+    "survival_mass": 0.22924185062542313,
+    "rows": [
+      {
+        "L": 5,
+        "count": 0,
+        "surviving_count_fraction": "0",
+        "solution_loss": 1.0,
+        "raw_probability_mass": 0.0,
+        "conditional_on_survival_mass": 0.0,
+        "product_states": 86275,
+        "product_edges": 86630,
+        "seconds": 0.5496070000808686
+      },
+      {
+        "L": 9,
+        "count": 29,
+        "surviving_count_fraction": "29/15384",
+        "solution_loss": 0.9981149245969839,
+        "raw_probability_mass": 4.881527394087177e-05,
+        "conditional_on_survival_mass": 0.00021294224334558794,
+        "product_states": 185938,
+        "product_edges": 188140,
+        "seconds": 1.1653938749805093,
+        "samples": "constrained_samples_L9.json"
+      },
+      {
+        "L": 21,
+        "count": 15384,
+        "surviving_count_fraction": "1",
+        "solution_loss": 0.0,
+        "raw_probability_mass": 0.22924185062542313,
+        "conditional_on_survival_mass": 1.0,
+        "product_states": 341820,
+        "product_edges": 346870,
+        "seconds": 1.6712532499805093,
+        "samples": "constrained_samples_L21.json"
+      }
+    ]
+  }
+}
