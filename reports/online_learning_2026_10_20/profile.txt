@@ -1,0 +1,96 @@
+rebuild
+Tue Oct 20 10:29:29 2026    /private/tmp/online-rebuild.prof
+
+         950207 function calls (948942 primitive calls) in 0.361 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1146 to 24 due to restriction <24>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.005    0.005    0.372    0.372 bench_online_learning.py:39(worker)
+        9    0.000    0.000    0.118    0.013 bench_online_learning.py:78(prepare)
+        9    0.000    0.000    0.118    0.013 backend.py:743(prepare_constrained_order_stack)
+        9    0.000    0.000    0.118    0.013 backend.py:673(prepare_constrained_order_stack_plan)
+        9    0.001    0.000    0.118    0.013 order_stack_bp.py:1026(prepare_order_stack_bp)
+       36    0.090    0.003    0.117    0.003 order_stack_bp.py:1098(_backward_messages)
+        9    0.000    0.000    0.117    0.013 bench_online_learning.py:69(graphs)
+       72    0.000    0.000    0.117    0.002 order_stack_bp.py:536(compile_graph)
+       36    0.021    0.001    0.117    0.003 order_stack_bp.py:628(from_model)
+        9    0.000    0.000    0.073    0.008 __init__.py:1(<module>)
+     81/2    0.000    0.000    0.057    0.029 <frozen importlib._bootstrap>:1349(_find_and_load)
+     81/2    0.000    0.000    0.057    0.028 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+     81/2    0.000    0.000    0.057    0.028 <frozen importlib._bootstrap>:911(_load_unlocked)
+     73/2    0.000    0.000    0.057    0.028 <frozen importlib._bootstrap_external>:1017(exec_module)
+    175/4    0.000    0.000    0.056    0.014 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+    118/2    0.013    0.000    0.056    0.028 {built-in method builtins.exec}
+       99    0.000    0.000    0.040    0.000 backend.py:400(sample)
+       99    0.000    0.000    0.040    0.000 order_stack_bp.py:871(sample)
+       99    0.004    0.000    0.040    0.000 order_stack_bp.py:840(_sample_plain)
+    27708    0.014    0.000    0.035    0.000 order_stack_bp.py:636(add_context)
+     6336    0.014    0.000    0.030    0.000 order_stack_bp.py:883(_candidate_sets)
+    10122    0.013    0.000    0.028    0.000 order_stack_bp.py:516(continuation_distribution_with_order)
+     2304    0.003    0.000    0.027    0.000 order_stack_bp.py:1115(rows_for)
+    49600    0.013    0.000    0.026    0.000 order_stack_bp.py:739(truncate_context)
+
+
+incremental
+Tue Oct 20 10:29:29 2026    /private/tmp/online-incremental.prof
+
+         464603 function calls (463336 primitive calls) in 0.252 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1152 to 24 due to restriction <24>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.004    0.004    0.257    0.257 bench_online_learning.py:39(worker)
+        9    0.000    0.000    0.115    0.013 bench_online_learning.py:78(prepare)
+        9    0.000    0.000    0.115    0.013 backend.py:743(prepare_constrained_order_stack)
+        9    0.000    0.000    0.115    0.013 backend.py:673(prepare_constrained_order_stack_plan)
+        9    0.001    0.000    0.115    0.013 order_stack_bp.py:1026(prepare_order_stack_bp)
+       36    0.089    0.002    0.115    0.003 order_stack_bp.py:1098(_backward_messages)
+        9    0.000    0.000    0.073    0.008 __init__.py:1(<module>)
+     81/2    0.000    0.000    0.057    0.029 <frozen importlib._bootstrap>:1349(_find_and_load)
+     81/2    0.000    0.000    0.057    0.029 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+     81/2    0.000    0.000    0.057    0.028 <frozen importlib._bootstrap>:911(_load_unlocked)
+     73/2    0.000    0.000    0.057    0.028 <frozen importlib._bootstrap_external>:1017(exec_module)
+    175/4    0.000    0.000    0.056    0.014 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+    118/2    0.013    0.000    0.056    0.028 {built-in method builtins.exec}
+       99    0.000    0.000    0.041    0.000 backend.py:400(sample)
+       99    0.000    0.000    0.041    0.000 order_stack_bp.py:871(sample)
+       99    0.004    0.000    0.041    0.000 order_stack_bp.py:840(_sample_plain)
+     6336    0.014    0.000    0.031    0.000 order_stack_bp.py:883(_candidate_sets)
+        9    0.000    0.000    0.026    0.003 bench_online_learning.py:69(graphs)
+       72    0.000    0.000    0.026    0.000 order_stack_bp.py:536(compile_graph)
+     2304    0.003    0.000    0.025    0.000 order_stack_bp.py:1115(rows_for)
+        1    0.000    0.000    0.023    0.023 adapters.py:1(<module>)
+       45    0.000    0.000    0.021    0.000 dataclasses.py:1294(wrap)
+       45    0.001    0.000    0.021    0.000 dataclasses.py:929(_process_class)
+    20316    0.010    0.000    0.021    0.000 order_stack_bp.py:1123(<genexpr>)
+
+
+Count construction/update: rebuild
+Tue Oct 20 10:29:29 2026    /private/tmp/online-rebuild.prof
+
+         950207 function calls (948942 primitive calls) in 0.361 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1146 to 1 due to restriction <'from_sequences|with_sequences|_updated_from_model'>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        9    0.012    0.001    0.025    0.003 order_stack_bp.py:430(from_sequences)
+
+
+Count construction/update: incremental
+Tue Oct 20 10:29:29 2026    /private/tmp/online-incremental.prof
+
+         464603 function calls (463336 primitive calls) in 0.252 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1152 to 3 due to restriction <'from_sequences|with_sequences|_updated_from_model'>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       32    0.005    0.000    0.013    0.000 order_stack_bp.py:566(_updated_from_model)
+        9    0.002    0.000    0.003    0.000 order_stack_bp.py:430(from_sequences)
+        8    0.000    0.000    0.002    0.000 order_stack_bp.py:461(with_sequences)
+
+

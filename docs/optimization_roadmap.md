@@ -4,6 +4,17 @@ This document collects the optimization ideas discussed for `vo_regular_bp`,
 including completed work, experiments that were rejected, small safe next steps,
 and larger architectural options.
 
+## October 2026 online-learning update
+
+`OrderStackModel.with_sequences(...)` now updates count snapshots and reuses
+unaffected ordinary graph rows, falling back to full construction if a newly
+learned suffix removes backoff support. Inference is recomputed. A local
+549-note/order-4/horizon-64 lifecycle measured 24% lower post-learning latency;
+virtual augmentation showed little benefit. Changing 19/621 order-4 rows affected
+all start-time beta values, so fully incremental BP remains deferred. See the
+[online-learning report](../reports/online_learning_2026_10_20.md) for the matrix,
+raw results, memory measurements, dependency analysis and integration instructions.
+
 ## September 2026 implementation update
 
 The review-driven implementation added bounded transition-row retention,

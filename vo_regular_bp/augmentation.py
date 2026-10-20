@@ -175,6 +175,20 @@ class VirtualAugmentedOrderStackModel:
         )
         return cls(base_model=base_model, transforms=tuple(transforms))
 
+    def with_sequences(
+        self, sequences: Iterable[Sequence[Symbol]],
+    ) -> "VirtualAugmentedOrderStackModel":
+        """Learn phrases into a new snapshot with fresh transformed caches.
+
+        Base counts update incrementally. Transformed contexts, distributions,
+        graphs and inference must be rebuilt: one base row can affect several
+        transformed rows, including newly available backoff suffixes.
+        """
+        return VirtualAugmentedOrderStackModel(
+            base_model=self.base_model.with_sequences(sequences, reuse_graphs=False),
+            transforms=self.transforms,
+        )
+
     @property
     def base_context_count(self) -> int:
         return len(self.base_model.counts)

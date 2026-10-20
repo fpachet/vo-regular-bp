@@ -164,6 +164,66 @@ also returns `('a', 'x')` and `('a', 'y')`, each with weight `0.3`. Greedy selec
 from conditional sampling weights chooses `a` first because its *total* suffix
 mass is `0.6`, and consequently misses the best complete word.
 
+## Online Learning and Continuator Integration
+
+Keep one symbolic model between phrases. `with_sequences(...)` returns a new
+snapshot with added phrase counts; it never mutates the original model or its
+prepared plans. Phrase boundaries, duplicate multiplicities, and START/END
+padding match rebuilding from the complete phrase memory.
+
+```python
+model = OrderStackModel.from_sequences(
+    phrase_memory, max_order=4, start_symbol=START, end_symbol=END,
+)
+
+# After receiving a phrase (encode events to stable hashable symbols first):
+phrase_memory.append(new_symbolic_phrase)
+model = model.with_sequences([new_symbolic_phrase])
+plan_cache.clear()
+backend_cache.clear()
+
+# On the next request, prepare with the new model, then cache as usual:
+plan = prepare_constrained_order_stack_plan(model, constraints, length=64)
+sample = plan.for_prefix(prefix_symbols).sample(rng=123)
+```
+
+`with_sequences` counts only the supplied phrases, copies the count dictionary,
+and copies only changed count rows. It remembers padding from `from_sequences`;
+for a model built directly from a count mapping, additions have no automatic
+padding. Never modify public `counts`, graph rows, or transforms in place:
+unchanged rows are shared between snapshots. Retain phrase memory separately
+for persistence and independent rebuild checks.
+
+Compiled ordinary graphs are reused lazily. Context IDs remain stable on the
+reuse path; rows whose effective count suffix changes are replaced. A new
+longer suffix can remove backoff transitions and orphan closure states; that
+order then uses full graph construction automatically. Minimized graphs are
+always recomputed. `model.with_sequences(phrases, reuse_graphs=False)` forces
+full graph construction; `OrderStackModel.from_sequences(phrase_memory, ...)`
+remains the independent full-count/full-graph reference.
+
+Every preparation on the new snapshot has fresh backward messages, regular
+transition tables and sampling candidates. Old plans intentionally remain valid
+for their old snapshot. Continuator must clear its own plan/backend caches (or
+key them by model identity plus request parameters) after assigning the updated
+model. Release old backends to reclaim old inference memory. Multiple updates
+before generation coalesce changed contexts without retaining prior models.
+
+`VirtualAugmentedOrderStackModel.with_sequences(...)` updates base counts and
+returns a fresh virtual wrapper. All transformed count/context/graph caches are
+rebuilt; transformed graph reuse is deliberately deferred. Reuse the wrapper
+between generations as before. Rebuild the entire model if order, encoding,
+sentinels or transforms change, or when removing/replacing learned phrases.
+
+The event/Continuator convenience facades that take all training events continue
+to rebuild. For online use, keep the encoded `OrderStackModel` and use the
+model-taking preparation APIs above, decoding sampled symbols through the
+application's current event decoder. Update the decoder when learning new
+symbols. Generation and BP remain entirely in this library.
+
+Measurements, reproduction commands and the incremental-BP assessment are in
+the [online-learning report](../reports/online_learning_2026_10_20.md).
+
 ## Cache Lifetime and Numerical Range
 
 Treat a prepared plan's training model, transforms, positional predicates, and
@@ -498,6 +558,8 @@ filtering.
 
 - `examples/most_probable_sequence.py`: optimize and sample one fixed-horizon
   context graph with the same positional acceptor.
+- `examples/online_learning_backend.py`: immutable phrase additions, fresh
+  constrained inference, and first-hit END generation.
 - `examples/symbolic_order_stack_backend.py`: plain symbolic sequence backend
   with final pitch-class and MAXORDER constraints.
 - `examples/until_order_stack_backend.py`: variable-length first-hit

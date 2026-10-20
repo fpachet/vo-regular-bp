@@ -422,6 +422,10 @@ class OrderStackModel:
         self.alphabet = frozenset(symbol for counter in self.counts.values() for symbol in counter)
         self._graph_cache: dict[int, FixedOrderContextGraph] = {}
         self._minimized_graph_cache: dict[int, FixedOrderContextGraph] = {}
+        self._start_symbol: Symbol | None = None
+        self._end_symbol: Symbol | None = None
+        # Pending graph snapshots, never previous models or inference tables.
+        self._graph_seeds: dict[int, tuple[FixedOrderContextGraph, frozenset[Context]]] = {}
 
     @classmethod
     def from_sequences(
@@ -449,7 +453,51 @@ class OrderStackModel:
                     counts.setdefault(context, Counter())[symbol] += 1
             if end_symbol is not None:
                 counts.setdefault((end_symbol,), Counter())[end_symbol] += 1
-        return cls(counts, max_order=max_order, forbidden_symbols=forbidden_symbols)
+        model = cls(counts, max_order=max_order, forbidden_symbols=forbidden_symbols)
+        model._start_symbol = start_symbol
+        model._end_symbol = end_symbol
+        return model
+
+    def with_sequences(
+        self,
+        sequences: Iterable[Sequence[Symbol]],
+        *,
+        reuse_graphs: bool = True,
+    ) -> "OrderStackModel":
+        """Return a new model after learning independent additional phrases.
+
+        Uses the START/END padding supplied to ``from_sequences``. Duplicate
+        phrases contribute again, and phrases are never joined. Unchanged count
+        rows and compiled graph rows are shared as immutable snapshots; all BP,
+        candidate and minimized-graph caches are fresh. ``reuse_graphs=False``
+        selects full graph construction for comparison or fallback.
+        """
+        delta = OrderStackModel.from_sequences(
+            sequences, max_order=self.max_order,
+            start_symbol=self._start_symbol, end_symbol=self._end_symbol,
+        )
+        # Avoid scanning the full corpus or copying unchanged Counter objects.
+        model = OrderStackModel({}, max_order=self.max_order,
+                                forbidden_symbols=self.forbidden_symbols)
+        model.counts = self.counts.copy()
+        for context, counts in delta.counts.items():
+            row = self.counts.get(context, Counter()).copy()
+            row.update(counts)
+            model.counts[context] = row
+        model.alphabet = self.alphabet | delta.alphabet
+        model._start_symbol = self._start_symbol
+        model._end_symbol = self._end_symbol
+        if reuse_graphs:
+            changed = frozenset(delta.counts)
+            # Coalesce unprepared updates instead of retaining a model chain.
+            model._graph_seeds = {
+                order: (graph, pending | changed)
+                for order, (graph, pending) in self._graph_seeds.items()
+            }
+            model._graph_seeds.update({
+                order: (graph, changed) for order, graph in self._graph_cache.items()
+            })
+        return model
 
     def longest_available_suffix(
         self,
@@ -489,7 +537,11 @@ class OrderStackModel:
         cached = self._graph_cache.get(order)
         if cached is not None:
             return cached
-        graph = FixedOrderContextGraph.from_model(self, order=order)
+        seed = self._graph_seeds.pop(order, None)
+        graph = (
+            FixedOrderContextGraph.from_model(self, order=order)
+            if seed is None else FixedOrderContextGraph._updated_from_model(self, *seed)
+        )
         self._graph_cache[order] = graph
         return graph
 
@@ -510,6 +562,68 @@ class FixedOrderContextGraph:
         self.outgoing: list[list[StackEdge]] = []
         self.state_aliases: tuple[tuple[Context, ...], ...] = ()
         self.quotient_stats: object | None = None
+
+    @classmethod
+    def _updated_from_model(
+        cls, model: OrderStackModel, previous: "FixedOrderContextGraph",
+        changed: frozenset[Context],
+    ) -> "FixedOrderContextGraph":
+        """Copy topology containers; replace rows with any changed suffix.
+
+        Counted contexts are not the entire graph: terminal emissions and
+        backoff closure also create states. A newly counted suffix can change
+        those states' effective order even if their own context has no counts.
+        Stable IDs make unchanged edge objects safe to share with old plans.
+        """
+        graph = cls(previous.order)
+        graph.contexts = previous.contexts.copy()
+        graph.context_to_id = previous.context_to_id.copy()
+        graph.outgoing = previous.outgoing.copy()
+        queue: deque[int] = deque()
+        for state, context in enumerate(graph.contexts):
+            for order in range(len(context), 0, -1):
+                suffix = context[-order:]
+                if suffix in changed:
+                    queue.append(state)
+                    break
+                if suffix in model.counts:
+                    # A more specific unchanged row shields shorter suffixes.
+                    break
+
+        def add_context(context: Context) -> int:
+            found = graph.context_to_id.get(context)
+            if found is not None:
+                return found
+            state = len(graph.contexts)
+            graph.context_to_id[context] = state
+            graph.contexts.append(context)
+            graph.outgoing.append([])
+            queue.append(state)
+            return state
+
+        for context in changed:
+            if len(context) <= graph.order:
+                add_context(context)
+        while queue:
+            src = queue.popleft()
+            context = graph.contexts[src]
+            distribution, effective_order = model.continuation_distribution_with_order(
+                context, max_order=graph.order,
+            )
+            old_row = graph.outgoing[src]
+            if old_row and effective_order != old_row[0].order:
+                symbols = {symbol for symbol, _ in distribution}
+                if any(edge.symbol not in symbols for edge in old_row):
+                    # A newly learned longer suffix supersedes a backoff row.
+                    # Removing edges can orphan closure states; rebuilding is
+                    # simpler than pruning and renumbering shared edge records.
+                    return cls.from_model(model, order=graph.order)
+            graph.outgoing[src] = [
+                StackEdge(src, add_context(graph.next_context(context, symbol)),
+                          symbol, probability, effective_order or 0)
+                for symbol, probability in distribution
+            ]
+        return graph
 
     @classmethod
     def from_model(cls, model: OrderStackModel, *, order: int) -> "FixedOrderContextGraph":

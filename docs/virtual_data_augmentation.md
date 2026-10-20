@@ -59,6 +59,13 @@ caches. Existing plans retain their graph references and remain usable; discard
 them too when reclaiming their memory. Subsequent preparation can build fresh
 shared graphs.
 
+For online additions, `model = model.with_sequences([new_phrase])` returns a new
+virtual snapshot with incrementally updated base counts and fresh transformed
+caches. Discard application-owned inference caches after replacing the model;
+old plans remain valid for the old snapshot. Transformed graph reuse across
+learning updates is not implemented. See the
+[online integration guide](library_usage.md#online-learning-and-continuator-integration).
+
 The [September implementation report](../reports/implementation_results_2026_09_07.md)
 records current LSDB lifecycle measurements, including 40% less retained traced
 memory during full preparation and the remaining cost of first-sample expansion.

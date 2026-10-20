@@ -85,6 +85,10 @@ Library-oriented integration notes are in
 are kept separately under [`paper/variable_order_regular_bp/`](paper/variable_order_regular_bp/).
 Optimization status and future performance ideas are tracked in
 [`docs/optimization_roadmap.md`](docs/optimization_roadmap.md).
+For repeated learning, `model.with_sequences([phrase])` updates counts into a new
+snapshot and reuses unaffected ordinary graph rows, with fresh inference and a
+full-graph fallback. See the [online integration guide](docs/library_usage.md#online-learning-and-continuator-integration)
+and [measurements](reports/online_learning_2026_10_20.md).
 Virtual transformed-corpus augmentation is described in
 [`docs/virtual_data_augmentation.md`](docs/virtual_data_augmentation.md).
 

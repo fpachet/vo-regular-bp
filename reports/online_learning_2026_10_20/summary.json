@@ -1,0 +1,1014 @@
+{
+  "bach-o2": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 0.5717501044273376,
+        "cached_sample_ms": 0.03148338291794062,
+        "counts_ms": 0.4789161030203104,
+        "first_sample_ms": 0.07049995474517345,
+        "graph_ms": 0.5489999894052744,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 1.6975831240415573,
+        "store_ms": 0.00020815059542655945,
+        "worker_total_range_ms": [
+          1.6489580739289522,
+          1.712084049358964
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 0.5494793877005577,
+        "cached_sample_ms": 0.024314550682902336,
+        "counts_ms": 0.057020923122763634,
+        "first_sample_ms": 0.04587508738040924,
+        "graph_ms": 0.5156873958185315,
+        "invalidate_ms": 0.025728950276970863,
+        "learn_to_first_ms": 1.2111670803278685,
+        "store_ms": 0.0009584473446011543,
+        "worker_total_range_ms": [
+          1.2050204677507281,
+          1.229520421475172
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 0.5687919910997152,
+        "cached_sample_ms": 0.031595793552696705,
+        "counts_ms": 0.4835419822484255,
+        "first_sample_ms": 0.07045804522931576,
+        "graph_ms": 0.5475000943988562,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 1.676458166912198,
+        "store_ms": 0.00016693957149982452,
+        "worker_total_range_ms": [
+          1.6653339844197035,
+          1.7369159031659365
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 0.5412915488705039,
+        "cached_sample_ms": 0.023858353961259127,
+        "counts_ms": 0.04122953396290541,
+        "first_sample_ms": 0.0460214214399457,
+        "graph_ms": 0.13339542783796787,
+        "invalidate_ms": 0.02547958865761757,
+        "learn_to_first_ms": 0.7879789918661118,
+        "store_ms": 0.0009585637599229813,
+        "worker_total_range_ms": [
+          0.7754164980724454,
+          0.7960210787132382
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 0.5837921053171158,
+        "cached_sample_ms": 0.03116251900792122,
+        "counts_ms": 0.48395898193120956,
+        "first_sample_ms": 0.07012509740889072,
+        "graph_ms": 0.5474579520523548,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 1.7096668016165495,
+        "store_ms": 0.00020791776478290558,
+        "worker_total_range_ms": [
+          1.653958112001419,
+          1.7377499025315046
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 0.5475209327414632,
+        "cached_sample_ms": 0.02442914992570877,
+        "counts_ms": 0.5377288907766342,
+        "first_sample_ms": 0.04604156129062176,
+        "graph_ms": 0.518792076036334,
+        "invalidate_ms": 0.02589542418718338,
+        "learn_to_first_ms": 1.692562596872449,
+        "store_ms": 0.0009579816833138466,
+        "worker_total_range_ms": [
+          1.686479547061026,
+          1.7173959640786052
+        ]
+      }
+    }
+  },
+  "bach-o6": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 59.27229207009077,
+        "cached_sample_ms": 0.22839580196887255,
+        "counts_ms": 1.5636668540537357,
+        "first_sample_ms": 0.33870781771838665,
+        "graph_ms": 8.975041098892689,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 70.15012484043837,
+        "store_ms": 0.0001671724021434784,
+        "worker_total_range_ms": [
+          69.98762511648238,
+          71.04870909824967
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 57.871833560056984,
+        "cached_sample_ms": 0.2941645565442741,
+        "counts_ms": 0.3762500127777457,
+        "first_sample_ms": 0.32093748450279236,
+        "graph_ms": 8.06083285715431,
+        "invalidate_ms": 2.716145943850279,
+        "learn_to_first_ms": 69.38737549353391,
+        "store_ms": 0.003249966539442539,
+        "worker_total_range_ms": [
+          68.9484584145248,
+          71.39822898898274
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 59.283999959006906,
+        "cached_sample_ms": 0.2318875165656209,
+        "counts_ms": 1.5642079524695873,
+        "first_sample_ms": 0.35208300687372684,
+        "graph_ms": 8.915957994759083,
+        "invalidate_ms": 0.000125030055642128,
+        "learn_to_first_ms": 70.16999996267259,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          69.7817918844521,
+          71.66545907966793
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 58.59695852268487,
+        "cached_sample_ms": 0.26090621249750257,
+        "counts_ms": 0.15437440015375614,
+        "first_sample_ms": 0.3088746452704072,
+        "graph_ms": 1.112438039854169,
+        "invalidate_ms": 2.705791499465704,
+        "learn_to_first_ms": 62.94243747834116,
+        "store_ms": 0.002875574864447117,
+        "worker_total_range_ms": [
+          62.738250475376844,
+          64.39491652417928
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 59.02241705916822,
+        "cached_sample_ms": 0.23033330217003822,
+        "counts_ms": 1.5757500659674406,
+        "first_sample_ms": 0.34624990075826645,
+        "graph_ms": 9.044165955856442,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 70.00291696749628,
+        "store_ms": 0.00020908191800117493,
+        "worker_total_range_ms": [
+          69.78912511840463,
+          72.40320788696408
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 57.947395951487124,
+        "cached_sample_ms": 0.2939166850410402,
+        "counts_ms": 1.8618335016071796,
+        "first_sample_ms": 0.3135835286229849,
+        "graph_ms": 8.165979059413075,
+        "invalidate_ms": 2.767082885839045,
+        "learn_to_first_ms": 71.15791644901037,
+        "store_ms": 0.0032919924706220627,
+        "worker_total_range_ms": [
+          70.46727114357054,
+          74.24927107058465
+        ]
+      }
+    }
+  },
+  "bach549": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 10.820041876286268,
+        "cached_sample_ms": 0.09359170217067003,
+        "counts_ms": 0.969999935477972,
+        "first_sample_ms": 0.1725421752780676,
+        "graph_ms": 3.040874842554331,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 15.023750020191073,
+        "store_ms": 0.00016693957149982452,
+        "worker_total_range_ms": [
+          14.864208176732063,
+          15.294209122657776
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 10.5460420018062,
+        "cached_sample_ms": 0.0877187354490161,
+        "counts_ms": 0.16281253192573786,
+        "first_sample_ms": 0.1512705348432064,
+        "graph_ms": 2.8784790774807334,
+        "invalidate_ms": 0.4304375033825636,
+        "learn_to_first_ms": 14.271021005697548,
+        "store_ms": 0.0013334210962057114,
+        "worker_total_range_ms": [
+          14.14218742866069,
+          14.288500067777932
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 10.799708077684045,
+        "cached_sample_ms": 0.09411668870598078,
+        "counts_ms": 1.0035419836640358,
+        "first_sample_ms": 0.16662501730024815,
+        "graph_ms": 3.012250177562237,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 14.984958106651902,
+        "store_ms": 0.0001671724021434784,
+        "worker_total_range_ms": [
+          14.854708919301629,
+          15.068250009790063
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 10.377896018326283,
+        "cached_sample_ms": 0.0863562454469502,
+        "counts_ms": 0.08808367419987917,
+        "first_sample_ms": 0.1418124884366989,
+        "graph_ms": 0.4670416237786412,
+        "invalidate_ms": 0.4221040289849043,
+        "learn_to_first_ms": 11.547728907316923,
+        "store_ms": 0.0014168908819556236,
+        "worker_total_range_ms": [
+          11.534375487826765,
+          11.649687075987458
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 10.854625143110752,
+        "cached_sample_ms": 0.09382502175867558,
+        "counts_ms": 0.9778339881449938,
+        "first_sample_ms": 0.16875006258487701,
+        "graph_ms": 2.9959999956190586,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 14.921166002750397,
+        "store_ms": 0.00016600824892520905,
+        "worker_total_range_ms": [
+          14.835250098258257,
+          15.038041165098548
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 10.580124915577471,
+        "cached_sample_ms": 0.08903546258807182,
+        "counts_ms": 1.145396032370627,
+        "first_sample_ms": 0.14752091374248266,
+        "graph_ms": 2.9183538863435388,
+        "invalidate_ms": 0.4337918944656849,
+        "learn_to_first_ms": 15.28302044607699,
+        "store_ms": 0.0013960525393486023,
+        "worker_total_range_ms": [
+          15.139416907913983,
+          15.927520580589771
+        ]
+      }
+    }
+  },
+  "growing16k": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 207.19604194164276,
+        "cached_sample_ms": 0.17387080006301403,
+        "counts_ms": 32.32799982652068,
+        "first_sample_ms": 0.26687514036893845,
+        "graph_ms": 60.00883295200765,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 303.18479193374515,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          290.90650007128716,
+          323.38620792143047
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 207.19243749044836,
+        "cached_sample_ms": 0.16628749435767531,
+        "counts_ms": 2.008812502026558,
+        "first_sample_ms": 0.24881295394152403,
+        "graph_ms": 60.2964999852702,
+        "invalidate_ms": 6.9138959515839815,
+        "learn_to_first_ms": 277.2445623995736,
+        "store_ms": 0.005812500603497028,
+        "worker_total_range_ms": [
+          272.58179150521755,
+          284.30497890803963
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 207.2261250577867,
+        "cached_sample_ms": 0.17801669891923666,
+        "counts_ms": 31.49583307094872,
+        "first_sample_ms": 0.3235829062759876,
+        "graph_ms": 63.1095829885453,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 304.41658291965723,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          290.8016659785062,
+          330.8685419615358
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 204.10508301574737,
+        "cached_sample_ms": 0.17057915683835745,
+        "counts_ms": 0.30499999411404133,
+        "first_sample_ms": 0.2549368655309081,
+        "graph_ms": 3.313416615128517,
+        "invalidate_ms": 6.592104560695589,
+        "learn_to_first_ms": 215.11672902852297,
+        "store_ms": 0.004749977961182594,
+        "worker_total_range_ms": [
+          213.1874170154333,
+          219.62922951206565
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 211.85329207219183,
+        "cached_sample_ms": 0.2024875022470951,
+        "counts_ms": 31.204999890178442,
+        "first_sample_ms": 0.36008283495903015,
+        "graph_ms": 59.654459124431014,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 306.4118749462068,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          293.75120787881315,
+          317.70187499932945
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 209.63020797353238,
+        "cached_sample_ms": 0.17588959308341146,
+        "counts_ms": 33.99991639889777,
+        "first_sample_ms": 0.2594171091914177,
+        "graph_ms": 61.39862455893308,
+        "invalidate_ms": 6.933812517672777,
+        "learn_to_first_ms": 313.657603925094,
+        "store_ms": 0.00537489540874958,
+        "worker_total_range_ms": [
+          305.2066045347601,
+          327.4807916022837
+        ]
+      }
+    }
+  },
+  "growing4k": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 82.4851249344647,
+        "cached_sample_ms": 0.11209577787667513,
+        "counts_ms": 7.739959051832557,
+        "first_sample_ms": 0.224041985347867,
+        "graph_ms": 24.69754102639854,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 115.11912499554455,
+        "store_ms": 0.00016600824892520905,
+        "worker_total_range_ms": [
+          114.53983304090798,
+          116.67620902881026
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 83.29837443307042,
+        "cached_sample_ms": 0.09214375168085098,
+        "counts_ms": 0.8394164033234119,
+        "first_sample_ms": 0.19439600873738527,
+        "graph_ms": 23.103353916667402,
+        "invalidate_ms": 3.015124937519431,
+        "learn_to_first_ms": 110.47062498982996,
+        "store_ms": 0.003729015588760376,
+        "worker_total_range_ms": [
+          109.74760435055941,
+          111.06739600654691
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 83.07133289054036,
+        "cached_sample_ms": 0.12100418098270893,
+        "counts_ms": 7.900499971583486,
+        "first_sample_ms": 0.24441699497401714,
+        "graph_ms": 24.57745815627277,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 115.79395807348192,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          114.1213751398027,
+          123.89300018548965
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 83.54024996515363,
+        "cached_sample_ms": 0.09128125384449959,
+        "counts_ms": 0.19716646056622267,
+        "first_sample_ms": 0.19070797134190798,
+        "graph_ms": 1.9107499392703176,
+        "invalidate_ms": 3.0391670297831297,
+        "learn_to_first_ms": 88.70585390832275,
+        "store_ms": 0.003437511622905731,
+        "worker_total_range_ms": [
+          87.63554145116359,
+          90.9943749429658
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 82.93633395805955,
+        "cached_sample_ms": 0.11842499952763319,
+        "counts_ms": 7.790709147229791,
+        "first_sample_ms": 0.22300006821751595,
+        "graph_ms": 24.450290948152542,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 115.56358286179602,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          114.40545902587473,
+          116.01487500593066
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 83.57583289034665,
+        "cached_sample_ms": 0.09607705287635326,
+        "counts_ms": 8.674124488607049,
+        "first_sample_ms": 0.19827112555503845,
+        "graph_ms": 23.302895948290825,
+        "invalidate_ms": 3.0376670183613896,
+        "learn_to_first_ms": 118.79716708790511,
+        "store_ms": 0.0037710415199398994,
+        "worker_total_range_ms": [
+          117.97089653555304,
+          123.25947894714773
+        ]
+      }
+    }
+  },
+  "novel-phrases": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 85.5854160618037,
+        "cached_sample_ms": 0.12249171268194914,
+        "counts_ms": 8.31449986435473,
+        "first_sample_ms": 0.23987493477761745,
+        "graph_ms": 25.71962494403124,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 120.1455001719296,
+        "store_ms": 0.00016693957149982452,
+        "worker_total_range_ms": [
+          115.77416700311005,
+          122.48770799487829
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 86.06877096462995,
+        "cached_sample_ms": 0.1131478464230895,
+        "counts_ms": 0.9067499777302146,
+        "first_sample_ms": 0.21366658620536327,
+        "graph_ms": 24.28739599417895,
+        "invalidate_ms": 3.1359170097857714,
+        "learn_to_first_ms": 115.0010630954057,
+        "store_ms": 0.030583469197154045,
+        "worker_total_range_ms": [
+          111.91689595580101,
+          118.15706244669855
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 83.48341705277562,
+        "cached_sample_ms": 0.11848749127238989,
+        "counts_ms": 7.977916859090328,
+        "first_sample_ms": 0.24270801804959774,
+        "graph_ms": 25.240583112463355,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 117.03104106709361,
+        "store_ms": 0.00016693957149982452,
+        "worker_total_range_ms": [
+          115.48704095184803,
+          122.19683290459216
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 86.2268335185945,
+        "cached_sample_ms": 0.11332914000377059,
+        "counts_ms": 0.22062507923692465,
+        "first_sample_ms": 0.20147894974797964,
+        "graph_ms": 1.9732919754460454,
+        "invalidate_ms": 3.1693330965936184,
+        "learn_to_first_ms": 91.89545852132142,
+        "store_ms": 0.03185437526553869,
+        "worker_total_range_ms": [
+          89.74485390353948,
+          94.02249997947365
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 84.52712511643767,
+        "cached_sample_ms": 0.11325420346111059,
+        "counts_ms": 8.28533386811614,
+        "first_sample_ms": 0.22962503135204315,
+        "graph_ms": 25.443000020459294,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 118.47933288663626,
+        "store_ms": 0.00016600824892520905,
+        "worker_total_range_ms": [
+          115.77699985355139,
+          135.77858312055469
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 87.0389585616067,
+        "cached_sample_ms": 0.11688756057992578,
+        "counts_ms": 8.85789596941322,
+        "first_sample_ms": 0.21102104801684618,
+        "graph_ms": 24.326749495230615,
+        "invalidate_ms": 3.126500640064478,
+        "learn_to_first_ms": 124.39985410310328,
+        "store_ms": 0.03216695040464401,
+        "worker_total_range_ms": [
+          119.85533346887678,
+          127.89077043998986
+        ]
+      }
+    }
+  },
+  "regular": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 34.889375092461705,
+        "cached_sample_ms": 0.13401249889284372,
+        "counts_ms": 0.960957957431674,
+        "first_sample_ms": 0.23916596546769142,
+        "graph_ms": 2.9646670445799828,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 39.06287485733628,
+        "store_ms": 0.0001671724021434784,
+        "worker_total_range_ms": [
+          38.59041607938707,
+          39.45883386768401
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 34.0494584525004,
+        "cached_sample_ms": 0.12114578858017921,
+        "counts_ms": 0.1829169923439622,
+        "first_sample_ms": 0.21095795091241598,
+        "graph_ms": 2.8639789670705795,
+        "invalidate_ms": 0.594792072661221,
+        "learn_to_first_ms": 37.89612487889826,
+        "store_ms": 0.0018540304154157639,
+        "worker_total_range_ms": [
+          37.71254152525216,
+          38.30166696570814
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 34.81358313001692,
+        "cached_sample_ms": 0.12917090207338333,
+        "counts_ms": 0.9964590426534414,
+        "first_sample_ms": 0.2425829879939556,
+        "graph_ms": 3.1229162123054266,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 39.10354198887944,
+        "store_ms": 0.00020815059542655945,
+        "worker_total_range_ms": [
+          38.67720905691385,
+          54.71512512303889
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 33.886416582390666,
+        "cached_sample_ms": 0.11953118955716491,
+        "counts_ms": 0.10277144610881805,
+        "first_sample_ms": 0.2118539996445179,
+        "graph_ms": 0.4843960050493479,
+        "invalidate_ms": 0.5891249747946858,
+        "learn_to_first_ms": 35.226707928813994,
+        "store_ms": 0.0018124701455235481,
+        "worker_total_range_ms": [
+          34.76595808751881,
+          36.19452053681016
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 35.06204183213413,
+        "cached_sample_ms": 0.13505828101187944,
+        "counts_ms": 0.9922499302774668,
+        "first_sample_ms": 0.25029201060533524,
+        "graph_ms": 3.023957833647728,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 39.3567499704659,
+        "store_ms": 0.0001671724021434784,
+        "worker_total_range_ms": [
+          38.847208954393864,
+          40.58454209007323
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 33.71812496334314,
+        "cached_sample_ms": 0.12104370398446918,
+        "counts_ms": 1.1414169566705823,
+        "first_sample_ms": 0.2046874724328518,
+        "graph_ms": 2.910125069320202,
+        "invalidate_ms": 0.5844379775226116,
+        "learn_to_first_ms": 38.62679144367576,
+        "store_ms": 0.0017083948478102684,
+        "worker_total_range_ms": [
+          38.54462504386902,
+          39.261958096176386
+        ]
+      }
+    }
+  },
+  "tiny": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 0.09062490426003933,
+        "cached_sample_ms": 0.023808307014405727,
+        "counts_ms": 0.04495796747505665,
+        "first_sample_ms": 0.0719169620424509,
+        "graph_ms": 0.07933401502668858,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 0.2876250073313713,
+        "store_ms": 0.00016600824892520905,
+        "worker_total_range_ms": [
+          0.27962494641542435,
+          0.29737502336502075
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 0.06841705180704594,
+        "cached_sample_ms": 0.022362498566508293,
+        "counts_ms": 0.026875059120357037,
+        "first_sample_ms": 0.044645508751273155,
+        "graph_ms": 0.0620625214651227,
+        "invalidate_ms": 0.011541997082531452,
+        "learn_to_first_ms": 0.21389604080468416,
+        "store_ms": 0.0006874324753880501,
+        "worker_total_range_ms": [
+          0.21060393191874027,
+          0.22256257943809032
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 0.08995807729661465,
+        "cached_sample_ms": 0.023837503977119923,
+        "counts_ms": 0.04516681656241417,
+        "first_sample_ms": 0.06925011985003948,
+        "graph_ms": 0.08120806887745857,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 0.2855421043932438,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          0.28200005181133747,
+          0.33820816315710545
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 0.06918702274560928,
+        "cached_sample_ms": 0.022241694387048483,
+        "counts_ms": 0.02591637894511223,
+        "first_sample_ms": 0.04685448948293924,
+        "graph_ms": 0.043687992729246616,
+        "invalidate_ms": 0.011978554539382458,
+        "learn_to_first_ms": 0.19916705787181854,
+        "store_ms": 0.0007915077731013298,
+        "worker_total_range_ms": [
+          0.19331194926053286,
+          0.21352095063775778
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 0.08941604755818844,
+        "cached_sample_ms": 0.024141604080796242,
+        "counts_ms": 0.04795799031853676,
+        "first_sample_ms": 0.07241591811180115,
+        "graph_ms": 0.08208304643630981,
+        "invalidate_ms": 0.000125030055642128,
+        "learn_to_first_ms": 0.290541909635067,
+        "store_ms": 0.000125030055642128,
+        "worker_total_range_ms": [
+          0.27991714887320995,
+          0.32824999652802944
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 0.06697955541312695,
+        "cached_sample_ms": 0.021974998526275158,
+        "counts_ms": 0.06387499161064625,
+        "first_sample_ms": 0.04443805664777756,
+        "graph_ms": 0.0609793933108449,
+        "invalidate_ms": 0.01193745993077755,
+        "learn_to_first_ms": 0.2541459398344159,
+        "store_ms": 0.0006459886208176613,
+        "worker_total_range_ms": [
+          0.24814601056277752,
+          0.2631250536069274
+        ]
+      }
+    }
+  },
+  "until-end": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 11.616833973675966,
+        "cached_sample_ms": 0.06891658995300531,
+        "counts_ms": 1.0167500004172325,
+        "first_sample_ms": 0.17654197290539742,
+        "graph_ms": 3.204457927495241,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 16.285208985209465,
+        "store_ms": 0.00020791776478290558,
+        "worker_total_range_ms": [
+          15.713125001639128,
+          16.784499865025282
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 11.785749928094447,
+        "cached_sample_ms": 0.06569585530087352,
+        "counts_ms": 0.2076460514217615,
+        "first_sample_ms": 0.14899997040629387,
+        "graph_ms": 3.2367499079555273,
+        "invalidate_ms": 0.48681197222322226,
+        "learn_to_first_ms": 15.985895995981991,
+        "store_ms": 0.0016670674085617065,
+        "worker_total_range_ms": [
+          15.098958043381572,
+          16.33970800321549
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 11.453042039647698,
+        "cached_sample_ms": 0.0713125104084611,
+        "counts_ms": 0.9661659132689238,
+        "first_sample_ms": 0.17054216004908085,
+        "graph_ms": 3.0648328829556704,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 15.628374880179763,
+        "store_ms": 0.00020908191800117493,
+        "worker_total_range_ms": [
+          15.481333015486598,
+          16.2562089972198
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 11.335000628605485,
+        "cached_sample_ms": 0.0787686905823648,
+        "counts_ms": 0.10120845399796963,
+        "first_sample_ms": 0.1418335596099496,
+        "graph_ms": 0.6127499509602785,
+        "invalidate_ms": 0.4497915506362915,
+        "learn_to_first_ms": 12.758625554852188,
+        "store_ms": 0.001437612809240818,
+        "worker_total_range_ms": [
+          12.542083975858986,
+          13.027978595346212
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 11.590417008846998,
+        "cached_sample_ms": 0.07660000119358301,
+        "counts_ms": 0.9733750484883785,
+        "first_sample_ms": 0.1973749604076147,
+        "graph_ms": 3.0747910495847464,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 15.781499911099672,
+        "store_ms": 0.0001671724021434784,
+        "worker_total_range_ms": [
+          15.651874942705035,
+          16.641750000417233
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 11.528937611728907,
+        "cached_sample_ms": 0.06264165276661515,
+        "counts_ms": 1.170270494185388,
+        "first_sample_ms": 0.14547898899763823,
+        "graph_ms": 3.2228538766503334,
+        "invalidate_ms": 0.4603755660355091,
+        "learn_to_first_ms": 16.636104555800557,
+        "store_ms": 0.0019581057131290436,
+        "worker_total_range_ms": [
+          16.215708572417498,
+          17.19781255815178
+        ]
+      }
+    }
+  },
+  "virtual": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 32.088583102449775,
+        "cached_sample_ms": 0.04932500887662172,
+        "counts_ms": 1.0096658952534199,
+        "first_sample_ms": 0.15458394773304462,
+        "graph_ms": 51.11145810224116,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 84.7040000371635,
+        "store_ms": 0.00020815059542655945,
+        "worker_total_range_ms": [
+          83.83195800706744,
+          88.16266688518226
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 33.79485406912863,
+        "cached_sample_ms": 0.052320852410048246,
+        "counts_ms": 2.5311459321528673,
+        "first_sample_ms": 0.11793745215982199,
+        "graph_ms": 53.60270803794265,
+        "invalidate_ms": 1.0749580105766654,
+        "learn_to_first_ms": 90.70418740157038,
+        "store_ms": 0.0019165454432368279,
+        "worker_total_range_ms": [
+          88.49570795428008,
+          93.55147939641029
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 31.82650008238852,
+        "cached_sample_ms": 0.04810418467968702,
+        "counts_ms": 1.0055841412395239,
+        "first_sample_ms": 0.15466613695025444,
+        "graph_ms": 51.08637479133904,
+        "invalidate_ms": 0.00012479722499847412,
+        "learn_to_first_ms": 84.06945900060236,
+        "store_ms": 0.00016600824892520905,
+        "worker_total_range_ms": [
+          83.20762519724667,
+          89.98170914128423
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 33.24431297369301,
+        "cached_sample_ms": 0.048399996012449265,
+        "counts_ms": 2.460020943544805,
+        "first_sample_ms": 0.11533289216458797,
+        "graph_ms": 51.29981250502169,
+        "invalidate_ms": 1.066646073013544,
+        "learn_to_first_ms": 89.42943753208965,
+        "store_ms": 0.0019794097170233727,
+        "worker_total_range_ms": [
+          88.74383301008493,
+          94.0906455507502
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 31.757415970787406,
+        "cached_sample_ms": 0.04714159294962883,
+        "counts_ms": 1.0110000148415565,
+        "first_sample_ms": 0.13537495397031307,
+        "graph_ms": 50.84537481889129,
+        "invalidate_ms": 0.000125030055642128,
+        "learn_to_first_ms": 83.96991714835167,
+        "store_ms": 0.00020908191800117493,
+        "worker_total_range_ms": [
+          83.0646250396967,
+          86.45208389498293
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 33.544625039212406,
+        "cached_sample_ms": 0.04963959800079465,
+        "counts_ms": 3.480604034848511,
+        "first_sample_ms": 0.12245797552168369,
+        "graph_ms": 52.66818741802126,
+        "invalidate_ms": 1.064165960997343,
+        "learn_to_first_ms": 91.45366703160107,
+        "store_ms": 0.00216637272387743,
+        "worker_total_range_ms": [
+          90.62477154657245,
+          93.47566647920758
+        ]
+      }
+    }
+  },
+  "virtual-regular": {
+    "counts": {
+      "cold": {
+        "backward_prepare_ms": 46.74670798704028,
+        "cached_sample_ms": 0.03397921100258827,
+        "counts_ms": 1.0044160299003124,
+        "first_sample_ms": 0.09979191236197948,
+        "graph_ms": 0.007041962817311287,
+        "invalidate_ms": 0.00016693957149982452,
+        "learn_to_first_ms": 47.85833298228681,
+        "store_ms": 0.00020908191800117493,
+        "worker_total_range_ms": [
+          46.95658409036696,
+          48.160583013668656
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 49.78837491944432,
+        "cached_sample_ms": 0.025637494400143623,
+        "counts_ms": 0.13422896154224873,
+        "first_sample_ms": 0.07897953037172556,
+        "graph_ms": 0.005895970389246941,
+        "invalidate_ms": 0.5603120662271976,
+        "learn_to_first_ms": 50.62339606229216,
+        "store_ms": 0.0018124701455235481,
+        "worker_total_range_ms": [
+          49.39947894308716,
+          54.14108315017074
+        ]
+      }
+    },
+    "incremental": {
+      "cold": {
+        "backward_prepare_ms": 47.06762498244643,
+        "cached_sample_ms": 0.03845829050987959,
+        "counts_ms": 1.0201670229434967,
+        "first_sample_ms": 0.11241692118346691,
+        "graph_ms": 0.007791910320520401,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 48.193416092544794,
+        "store_ms": 0.00020884908735752106,
+        "worker_total_range_ms": [
+          47.30279208160937,
+          50.54412502795458
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 49.69725001137704,
+        "cached_sample_ms": 0.02604376059025526,
+        "counts_ms": 0.136271002702415,
+        "first_sample_ms": 0.07906253449618816,
+        "graph_ms": 0.005812500603497028,
+        "invalidate_ms": 0.5941664567217231,
+        "learn_to_first_ms": 50.51556194666773,
+        "store_ms": 0.0017704442143440247,
+        "worker_total_range_ms": [
+          50.417999969795346,
+          53.0610210262239
+        ]
+      }
+    },
+    "rebuild": {
+      "cold": {
+        "backward_prepare_ms": 47.31670813634992,
+        "cached_sample_ms": 0.033712503500282764,
+        "counts_ms": 1.0158750228583813,
+        "first_sample_ms": 0.11054100468754768,
+        "graph_ms": 0.007041962817311287,
+        "invalidate_ms": 0.00016600824892520905,
+        "learn_to_first_ms": 48.436583019793034,
+        "store_ms": 0.00029103830456733704,
+        "worker_total_range_ms": [
+          47.47408302500844,
+          49.77749986574054
+        ]
+      },
+      "post_learning": {
+        "backward_prepare_ms": 50.580604118295014,
+        "cached_sample_ms": 0.026702042669057846,
+        "counts_ms": 1.0932079749181867,
+        "first_sample_ms": 0.07850001566112041,
+        "graph_ms": 0.006062444299459457,
+        "invalidate_ms": 0.6234784377738833,
+        "learn_to_first_ms": 52.47472913470119,
+        "store_ms": 0.0018954742699861526,
+        "worker_total_range_ms": [
+          51.35570850688964,
+          53.982207900844514
+        ]
+      }
+    }
+  }
+}
