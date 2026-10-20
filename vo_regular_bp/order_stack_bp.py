@@ -989,81 +989,60 @@ def _backward_messages(
     forbidden_symbols: frozenset[Symbol],
     allowed_forbidden_symbols: Mapping[int, frozenset[Symbol]],
 ) -> list[list[float]]:
-    backward = _BackwardTable([[0.0 for _ in graph.contexts] for _ in range(length + 1)])
+    state_count = len(graph.contexts)
+    backward = _BackwardTable([[0.0] * state_count for _ in range(length + 1)])
+    backward[length] = [1.0] * state_count
     needs_log = False
-    for state in range(len(graph.contexts)):
-        backward[length][state] = 1.0
+    # Most horizons repeat the same few positional masks. Filter symbolic edges
+    # once per mask, then keep the numeric recurrence free of symbol lookups.
+    # This cache lives only for this preparation, never on the model/graph.
+    row_cache = {}
+
+    def rows_for(position):
+        constraint = constraints.get(position)
+        allowed = allowed_forbidden_symbols.get(position, frozenset())
+        key = None if callable(constraint) else (
+            None if constraint is None else frozenset(constraint), allowed
+        )
+        rows = row_cache.get(key) if key is not None else None
+        if rows is None:
+            rows = tuple(
+                tuple((edge.dst, edge.probability) for edge in edges
+                      if not _is_forbidden(edge.symbol, forbidden_symbols, allowed)
+                      and (constraint is None or (
+                          constraint(edge.symbol) if callable(constraint)
+                          else edge.symbol in constraint)))
+                for edges in graph.outgoing
+            )
+            # Bound temporary edge storage even when every mask is distinct.
+            if key is not None and len(row_cache) < 8:
+                row_cache[key] = rows
+        return rows
 
     for position in range(length - 1, -1, -1):
-        constraint = constraints.get(position)
-        allowed_forbidden = allowed_forbidden_symbols.get(position, frozenset())
+        rows = rows_for(position)
         beta_next = backward[position + 1]
         beta = backward[position]
-        if constraint is None:
-            for state, edges in enumerate(graph.outgoing):
-                total = 0.0
-                for edge in edges:
-                    if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
-                        continue
-                    total += edge.probability * beta_next[edge.dst]
-                beta[state] = total
-        elif callable(constraint):
-            for state, edges in enumerate(graph.outgoing):
-                total = 0.0
-                for edge in edges:
-                    if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
-                        continue
-                    if constraint(edge.symbol):
-                        total += edge.probability * beta_next[edge.dst]
-                beta[state] = total
-        else:
-            for state, edges in enumerate(graph.outgoing):
-                total = 0.0
-                for edge in edges:
-                    if _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden):
-                        continue
-                    if edge.symbol in constraint:
-                        total += edge.probability * beta_next[edge.dst]
-                beta[state] = total
-        if any(0 < value < 1e-200 for value in beta):
-            needs_log = True
-        if not needs_log:
-            needs_log = any(
-                edge.probability > 0
-                and beta_next[edge.dst] > 0
-                and not _is_forbidden(edge.symbol, forbidden_symbols, allowed_forbidden)
-                and (
-                    constraint is None
-                    or (
-                        constraint(edge.symbol)
-                        if callable(constraint)
-                        else edge.symbol in constraint
-                    )
-                )
-                for state, value in enumerate(beta)
-                if value == 0
-                for edge in graph.outgoing[state]
-            )
+        for state, edges in enumerate(rows):
+            total = 0.0
+            for destination, probability in edges:
+                next_value = beta_next[destination]
+                total += probability * next_value
+                # Detect a positive edge product rounding to zero in the same
+                # pass. Checking dead states in a second edge scan is costly.
+                if total == 0.0 and next_value > 0.0 and probability > 0.0:
+                    needs_log = True
+            beta[state] = total
+            if 0.0 < total < 1e-200:
+                needs_log = True
     if needs_log:
-        logs = [[NEG_INF] * len(graph.contexts) for _ in range(length + 1)]
-        logs[length] = [0.0] * len(graph.contexts)
+        logs = [[NEG_INF] * state_count for _ in range(length + 1)]
+        logs[length] = [0.0] * state_count
         for position in range(length - 1, -1, -1):
-            constraint = constraints.get(position)
-            allowed = allowed_forbidden_symbols.get(position, frozenset())
-            for state, edges in enumerate(graph.outgoing):
-                value = log_sum(
-                    log_mass(edge.probability) + logs[position + 1][edge.dst]
-                    for edge in edges
-                    if not _is_forbidden(edge.symbol, forbidden_symbols, allowed)
-                    and (
-                        constraint is None
-                        or (
-                            constraint(edge.symbol)
-                            if callable(constraint)
-                            else edge.symbol in constraint
-                        )
-                    )
-                )
+            log_next = logs[position + 1]
+            for state, edges in enumerate(rows_for(position)):
+                value = log_sum(log_mass(probability) + log_next[destination]
+                                for destination, probability in edges)
                 logs[position][state] = value
                 backward[position][state] = mass_from_log(value)
         backward.log_values = logs
